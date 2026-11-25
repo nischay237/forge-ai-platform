@@ -1,0 +1,86 @@
+spring:
+  application:
+    name: forge-platform
+  profiles:
+    default: local
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: false
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  ai:
+    openai:
+      api-key: ${FORGE_OPENAI_API_KEY:disabled-placeholder-key}
+      chat:
+        options:
+          model: ${FORGE_OPENAI_MODEL:gpt-4o-mini}
+          temperature: 0.1
+
+server:
+  port: ${PORT:8080}
+  compression:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  tracing:
+    sampling:
+      probability: 0.1
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      aiReviewEngine:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 15s
+      githubApi:
+        slidingWindowSize: 10
+        failureRateThreshold: 50
+        waitDurationInOpenState: 20s
+  retry:
+    instances:
+      aiReviewEngine:
+        maxAttempts: 3
+        waitDuration: 500ms
+      githubApi:
+        maxAttempts: 3
+        waitDuration: 400ms
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+forge:
+  security:
+    jwt-secret: ${FORGE_JWT_SECRET:forge-dev-super-secret-jwt-signing-key-at-least-64-characters-long-2026!}
+    jwt-expiration-ms: 86400000
+    encryption-key: ${FORGE_ENCRYPTION_KEY:MDEyMzQ1Njc4OUFCQ0RFRjAxMjM0NTY3ODlBQkNERUY=}
+    default-webhook-secret: ${FORGE_GITHUB_WEBHOOK_SECRET:forge_webhook_dev_secret}
+  github:
+    token: ${FORGE_GITHUB_TOKEN:}
+  ai:
+    provider: ${FORGE_AI_PROVIDER:hybrid}
+    openai-api-key: ${FORGE_OPENAI_API_KEY:}
+    prompt-version: "forge-review-v2.4"
+  outbox:
+    poll-interval-ms: 800
+    max-retries: 3
+  cors:
+    allowed-origins: ${FORGE_CORS_ORIGINS:http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173}

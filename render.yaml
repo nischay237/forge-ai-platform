@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: forge-ai-platform
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /actuator/health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: SPRING_PROFILES_ACTIVE
+        value: local
+      - key: FORGE_SEED_ENABLED
+        value: "true"
+      - key: FORGE_JWT_SECRET
+        generateValue: true
+      - key: FORGE_ENCRYPTION_KEY
+        generateValue: true
+      - key: FORGE_GITHUB_WEBHOOK_SECRET
+        generateValue: true
+      - key: FORGE_CORS_ORIGINS
+        value: https://forge-ai-platform.onrender.com,https://nischaysrivastava.com

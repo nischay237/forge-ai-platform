@@ -1,0 +1,28 @@
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
+  datasource:
+    url: jdbc:h2:mem:forgetest;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: forge
+    password: ""
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+
+management:
+  health:
+    redis:
+      enabled: false
+  otlp:
+    tracing:
+      export:
+        enabled: false
+
+forge:
+  seed:
+    enabled: false
+  outbox:
+    poll-interval-ms: 60000

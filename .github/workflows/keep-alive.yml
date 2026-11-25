@@ -1,0 +1,13 @@
+name: Keep FORGE Live
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Warm up FORGE Render instance
+        run: curl -fsS https://forge-ai-platform.onrender.com/actuator/health || true
