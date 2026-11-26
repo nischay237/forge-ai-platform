@@ -332,7 +332,7 @@ export function PredictiveIntelligencePage() {
         </div>
       )}
 
-      {/* Real-Time Predictive Pipeline Execution Timeline */}
+      {/* Real-Time Predictive Pipeline & Evaluation Execution Timelines */}
       {selectedReviewId && (
         <LiveProcessingPanel
           resourceId={selectedReviewId}
@@ -341,6 +341,12 @@ export function PredictiveIntelligencePage() {
           onRetry={canMutate ? () => recomputeMutation.mutate(selectedReviewId) : undefined}
         />
       )}
+      <LiveProcessingPanel
+        eventTypes={['PREDICTION_EVALUATION']}
+        collapseWhenCompleted
+        autoRecover={false}
+        onRetry={canMutate ? () => evalMutation.mutate() : undefined}
+      />
 
       {/* Honest Historical Data Availability Banner */}
       {ov && (

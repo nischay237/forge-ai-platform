@@ -16,6 +16,8 @@ import com.forge.platform.repository.RepositoryEntity;
 import com.forge.platform.repository.RepositoryJpaRepository;
 import com.forge.platform.review.PullRequestReviewEntity;
 import com.forge.platform.review.PullRequestReviewRepository;
+import com.forge.platform.sse.OperationStatusFallbackProvider;
+import com.forge.platform.sse.OperationStatusSnapshot;
 import com.forge.platform.sse.PipelineEvent;
 import com.forge.platform.sse.SseHubService;
 import io.micrometer.core.instrument.Counter;
@@ -46,7 +48,7 @@ import java.util.Optional;
  *     historical context, and workspace overview (cached via ForgeCacheService).
  */
 @Service
-public class PredictionPipelineService implements DomainEventHandler {
+public class PredictionPipelineService implements DomainEventHandler, OperationStatusFallbackProvider {
 
     private static final Logger log = LoggerFactory.getLogger(PredictionPipelineService.class);
 
@@ -816,5 +818,56 @@ public class PredictionPipelineService implements DomainEventHandler {
         } catch (Exception ex) {
             return fallback;
         }
+    }
+
+    @Override
+    public List<String> supportedEventTypes() {
+        return List.of("PR_PREDICTION");
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<OperationStatusSnapshot> findFallbackSnapshot(String tenantId, String eventType, String resourceId) {
+        if (!"PR_PREDICTION".equals(eventType) || resourceId == null || resourceId.isBlank()) {
+            return Optional.empty();
+        }
+        return runRepository.findFirstByTenantIdAndReviewIdOrderByCreatedAtDesc(tenantId, resourceId).map(run -> {
+            Map<String, Object> details = new HashMap<>();
+            details.put("recoveredFromDatabase", true);
+            details.put("overallRiskScore", run.getOverallEngineeringRiskScore());
+            details.put("overallRiskLevel", run.getOverallRiskLevel());
+            details.put("historicalSamples", run.getHistoricalSampleSize());
+            details.put("engineVersion", run.getEngineVersion());
+
+            PipelineEvent recoveredEvent = PipelineEvent.stage(
+                "PR_PREDICTION",
+                run.getReviewId(),
+                "PREDICTION_COMPLETED",
+                "Predictive baseline ready",
+                "COMPLETED",
+                5,
+                5,
+                "Recovered persisted prediction baseline (overall score " + run.getOverallEngineeringRiskScore()
+                    + "/100 · " + run.getOverallRiskLevel() + ")",
+                details
+            ).withSequence(1L);
+
+            return new OperationStatusSnapshot(
+                PipelineEvent.buildOperationId("PR_PREDICTION", run.getReviewId()),
+                "PR_PREDICTION",
+                run.getReviewId(),
+                recoveredEvent.correlationId(),
+                "COMPLETED",
+                "PREDICTION_COMPLETED",
+                "Predictive baseline ready",
+                5,
+                5,
+                1L,
+                run.getCreatedAt(),
+                run.getCreatedAt(),
+                run.getCreatedAt(),
+                List.of(recoveredEvent)
+            );
+        });
     }
 }

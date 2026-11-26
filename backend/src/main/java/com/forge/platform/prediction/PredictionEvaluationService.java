@@ -6,6 +6,8 @@ import com.forge.platform.audit.AuditService;
 import com.forge.platform.common.RateLimitExceededException;
 import com.forge.platform.common.TenantContext;
 import com.forge.platform.messaging.RateLimiterService;
+import com.forge.platform.sse.PipelineEvent;
+import com.forge.platform.sse.SseHubService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -52,6 +54,7 @@ public class PredictionEvaluationService {
     private final IncidentRecordRepository incidentRepository;
     private final PredictionModelEvaluationRepository evaluationRepository;
     private final RateLimiterService rateLimiterService;
+    private final SseHubService sseHubService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
 
@@ -64,6 +67,7 @@ public class PredictionEvaluationService {
         IncidentRecordRepository incidentRepository,
         PredictionModelEvaluationRepository evaluationRepository,
         RateLimiterService rateLimiterService,
+        SseHubService sseHubService,
         AuditService auditService,
         ObjectMapper objectMapper
     ) {
@@ -75,6 +79,7 @@ public class PredictionEvaluationService {
         this.incidentRepository = incidentRepository;
         this.evaluationRepository = evaluationRepository;
         this.rateLimiterService = rateLimiterService;
+        this.sseHubService = sseHubService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
     }
@@ -94,83 +99,134 @@ public class PredictionEvaluationService {
         if (!rateLimiterService.allowRequest("pred-eval:" + tenantId, 15, Duration.ofMinutes(1))) {
             throw new RateLimitExceededException("Rate limit exceeded for model evaluations. Please retry shortly.");
         }
-        List<PredictionRunEntity> runs = (repositoryId != null && !repositoryId.isBlank())
-            ? runRepository.findByTenantIdAndRepositoryIdOrderByCreatedAtDesc(tenantId, repositoryId)
-            : runRepository.findByTenantIdOrderByCreatedAtDesc(tenantId);
+        String scopeId = (repositoryId != null && !repositoryId.isBlank()) ? repositoryId : "workspace";
 
-        // Deduplicate to EARLIEST (pre-outcome) prediction run per PR review to prevent temporal / future-data leakage
-        List<PredictionRunEntity> sortedAsc = new ArrayList<>(runs);
-        sortedAsc.sort(Comparator.comparing(PredictionRunEntity::getCreatedAt));
-        Map<String, PredictionRunEntity> earliestByReview = new LinkedHashMap<>();
-        for (PredictionRunEntity run : sortedAsc) {
-            earliestByReview.putIfAbsent(run.getReviewId(), run);
-        }
-        List<PredictionRunEntity> chronologicalRuns = new ArrayList<>(earliestByReview.values());
+        sseHubService.publish(tenantId, PipelineEvent.stage(
+            "PREDICTION_EVALUATION", scopeId, "LOADING_PREDICTION_HISTORY",
+            "Loading historical pre-outcome prediction runs", "STARTED", 1, 4,
+            "Querying stored prediction runs for " + ("workspace".equals(scopeId) ? "all repositories" : "repository " + scopeId),
+            Map.of("scope", scopeId)
+        ));
 
-        List<String> runIds = chronologicalRuns.stream().map(PredictionRunEntity::getId).toList();
-        Map<String, Map<String, PredictionItemEntity>> itemsByRunAndCategory = new LinkedHashMap<>();
-        if (!runIds.isEmpty()) {
-            for (PredictionItemEntity item : itemRepository.findByTenantIdAndPredictionRunIdIn(tenantId, runIds)) {
-                itemsByRunAndCategory
-                    .computeIfAbsent(item.getPredictionRunId(), k -> new LinkedHashMap<>())
-                    .put(item.getCategory(), item);
+        try {
+            List<PredictionRunEntity> runs = (repositoryId != null && !repositoryId.isBlank())
+                ? runRepository.findByTenantIdAndRepositoryIdOrderByCreatedAtDesc(tenantId, repositoryId)
+                : runRepository.findByTenantIdOrderByCreatedAtDesc(tenantId);
+
+            // Deduplicate to EARLIEST (pre-outcome) prediction run per PR review to prevent temporal / future-data leakage
+            List<PredictionRunEntity> sortedAsc = new ArrayList<>(runs);
+            sortedAsc.sort(Comparator.comparing(PredictionRunEntity::getCreatedAt));
+            Map<String, PredictionRunEntity> earliestByReview = new LinkedHashMap<>();
+            for (PredictionRunEntity run : sortedAsc) {
+                earliestByReview.putIfAbsent(run.getReviewId(), run);
             }
+            List<PredictionRunEntity> chronologicalRuns = new ArrayList<>(earliestByReview.values());
+
+            List<String> runIds = chronologicalRuns.stream().map(PredictionRunEntity::getId).toList();
+            Map<String, Map<String, PredictionItemEntity>> itemsByRunAndCategory = new LinkedHashMap<>();
+            if (!runIds.isEmpty()) {
+                for (PredictionItemEntity item : itemRepository.findByTenantIdAndPredictionRunIdIn(tenantId, runIds)) {
+                    itemsByRunAndCategory
+                        .computeIfAbsent(item.getPredictionRunId(), k -> new LinkedHashMap<>())
+                        .put(item.getCategory(), item);
+                }
+            }
+
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PREDICTION_EVALUATION", scopeId, "LOADING_CONFIRMED_OUTCOMES",
+                "Loading confirmed defects, tests, deploys & incidents", "IN_PROGRESS", 2, 4,
+                "Loaded " + chronologicalRuns.size() + " unique pre-outcome PR prediction run(s); matching against confirmed outcomes",
+                Map.of("preOutcomeRuns", chronologicalRuns.size(), "totalStoredRuns", runs.size())
+            ));
+
+            List<DefectRecordEntity> defects = defectRepository.findByTenantIdOrderByReportedAtDesc(tenantId);
+            List<HistoricalTestExecutionEntity> tests = testRepository.findByTenantIdOrderByExecutedAtDesc(tenantId);
+            List<DeploymentRecordEntity> deployments = deploymentRepository.findByTenantIdOrderByDeployedAtDesc(tenantId);
+            List<IncidentRecordEntity> incidents = incidentRepository.findByTenantIdOrderByOccurredAtDesc(tenantId);
+
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PREDICTION_EVALUATION", scopeId, "EVALUATING_HELD_OUT_SPLITS",
+                "Evaluating chronological held-out confusion matrices", "IN_PROGRESS", 3, 4,
+                "Scoring chronological held-out splits with temporal anti-leakage checks across 4 categories",
+                Map.of(
+                    "defects", defects.size(),
+                    "testExecutions", tests.size(),
+                    "deployments", deployments.size(),
+                    "incidents", incidents.size()
+                )
+            ));
+
+            List<PredictionDtos.ModelEvaluationDto> results = new ArrayList<>();
+            results.add(evaluateCategory(tenantId, repositoryId, BugRiskPredictor.CATEGORY, chronologicalRuns, itemsByRunAndCategory,
+                run -> defects.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
+                    && d.getIntroducedPrNumber() != null && d.getIntroducedPrNumber() == run.getPrNumber()
+                    && isPostPrediction(d.getReportedAt(), run.getCreatedAt())),
+                run -> defects.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
+                    && isPostPrediction(d.getReportedAt(), run.getCreatedAt())),
+                run -> (int) defects.stream().filter(d -> d.getRepositoryId().equals(run.getRepositoryId())
+                    && d.getIntroducedPrNumber() != null && d.getIntroducedPrNumber() == run.getPrNumber()
+                    && !isPostPrediction(d.getReportedAt(), run.getCreatedAt())).count()));
+
+            results.add(evaluateCategory(tenantId, repositoryId, TestFailurePredictor.CATEGORY, chronologicalRuns, itemsByRunAndCategory,
+                run -> tests.stream().anyMatch(t -> t.getRepositoryId().equals(run.getRepositoryId())
+                    && t.getPrNumber() != null && t.getPrNumber() == run.getPrNumber()
+                    && isPostPrediction(t.getExecutedAt(), run.getCreatedAt())
+                    && ("FAILED".equalsIgnoreCase(t.getOutcome()) || "FLAKY".equalsIgnoreCase(t.getOutcome()))),
+                run -> tests.stream().anyMatch(t -> t.getRepositoryId().equals(run.getRepositoryId())
+                    && t.getPrNumber() != null && t.getPrNumber() == run.getPrNumber()
+                    && isPostPrediction(t.getExecutedAt(), run.getCreatedAt())),
+                run -> (int) tests.stream().filter(t -> t.getRepositoryId().equals(run.getRepositoryId())
+                    && t.getPrNumber() != null && t.getPrNumber() == run.getPrNumber()
+                    && !isPostPrediction(t.getExecutedAt(), run.getCreatedAt())).count()));
+
+            results.add(evaluateCategory(tenantId, repositoryId, OperationalRiskPredictor.CATEGORY_CHANGE_FAILURE, chronologicalRuns, itemsByRunAndCategory,
+                run -> deployments.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
+                    && d.getPrNumber() != null && d.getPrNumber() == run.getPrNumber()
+                    && isPostPrediction(d.getDeployedAt(), run.getCreatedAt())
+                    && ("FAILED".equalsIgnoreCase(d.getOutcome()) || "ROLLED_BACK".equalsIgnoreCase(d.getOutcome()))),
+                run -> deployments.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
+                    && d.getPrNumber() != null && d.getPrNumber() == run.getPrNumber()
+                    && isPostPrediction(d.getDeployedAt(), run.getCreatedAt())),
+                run -> (int) deployments.stream().filter(d -> d.getRepositoryId().equals(run.getRepositoryId())
+                    && d.getPrNumber() != null && d.getPrNumber() == run.getPrNumber()
+                    && !isPostPrediction(d.getDeployedAt(), run.getCreatedAt())).count()));
+
+            results.add(evaluateCategory(tenantId, repositoryId, OperationalRiskPredictor.CATEGORY_INCIDENT, chronologicalRuns, itemsByRunAndCategory,
+                run -> incidents.stream().anyMatch(i -> i.getRepositoryId().equals(run.getRepositoryId())
+                    && i.getRelatedPrNumber() != null && i.getRelatedPrNumber() == run.getPrNumber()
+                    && isPostPrediction(i.getOccurredAt(), run.getCreatedAt())),
+                run -> incidents.stream().anyMatch(i -> i.getRepositoryId().equals(run.getRepositoryId())
+                    && isPostPrediction(i.getOccurredAt(), run.getCreatedAt())),
+                run -> (int) incidents.stream().filter(i -> i.getRepositoryId().equals(run.getRepositoryId())
+                    && i.getRelatedPrNumber() != null && i.getRelatedPrNumber() == run.getPrNumber()
+                    && !isPostPrediction(i.getOccurredAt(), run.getCreatedAt())).count()));
+
+            auditService.recordCurrent("PREDICTION_EVALUATION_RUN", "MODEL_EVALUATION",
+                scopeId,
+                "Executed chronological held-out evaluation across " + results.size() + " predictive categories");
+
+            long evaluatedCount = results.stream().filter(r -> "EVALUATED".equals(r.status())).count();
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PREDICTION_EVALUATION", scopeId, "EVALUATION_COMPLETED",
+                "Held-out evaluation complete", "COMPLETED", 4, 4,
+                "Evaluated " + results.size() + " predictive categories (" + evaluatedCount + " with sufficient labelled data)",
+                Map.of(
+                    "categories", results.size(),
+                    "evaluatedCategories", evaluatedCount,
+                    "insufficientDataCategories", results.size() - evaluatedCount
+                )
+            ));
+
+            return results;
+        } catch (RuntimeException ex) {
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PREDICTION_EVALUATION", scopeId, "FAILED",
+                "Evaluation failed", "FAILED", 4, 4,
+                "Chronological evaluation encountered an error: " + (ex.getMessage() != null ? ex.getMessage() : "unexpected error"),
+                Map.of("error", ex.getMessage() != null ? ex.getMessage() : "unexpected error")
+            ));
+            throw ex;
         }
-
-        List<DefectRecordEntity> defects = defectRepository.findByTenantIdOrderByReportedAtDesc(tenantId);
-        List<HistoricalTestExecutionEntity> tests = testRepository.findByTenantIdOrderByExecutedAtDesc(tenantId);
-        List<DeploymentRecordEntity> deployments = deploymentRepository.findByTenantIdOrderByDeployedAtDesc(tenantId);
-        List<IncidentRecordEntity> incidents = incidentRepository.findByTenantIdOrderByOccurredAtDesc(tenantId);
-
-        List<PredictionDtos.ModelEvaluationDto> results = new ArrayList<>();
-        results.add(evaluateCategory(tenantId, repositoryId, BugRiskPredictor.CATEGORY, chronologicalRuns, itemsByRunAndCategory,
-            run -> defects.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
-                && d.getIntroducedPrNumber() != null && d.getIntroducedPrNumber() == run.getPrNumber()
-                && isPostPrediction(d.getReportedAt(), run.getCreatedAt())),
-            run -> defects.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
-                && isPostPrediction(d.getReportedAt(), run.getCreatedAt())),
-            run -> (int) defects.stream().filter(d -> d.getRepositoryId().equals(run.getRepositoryId())
-                && d.getIntroducedPrNumber() != null && d.getIntroducedPrNumber() == run.getPrNumber()
-                && !isPostPrediction(d.getReportedAt(), run.getCreatedAt())).count()));
-
-        results.add(evaluateCategory(tenantId, repositoryId, TestFailurePredictor.CATEGORY, chronologicalRuns, itemsByRunAndCategory,
-            run -> tests.stream().anyMatch(t -> t.getRepositoryId().equals(run.getRepositoryId())
-                && t.getPrNumber() != null && t.getPrNumber() == run.getPrNumber()
-                && isPostPrediction(t.getExecutedAt(), run.getCreatedAt())
-                && ("FAILED".equalsIgnoreCase(t.getOutcome()) || "FLAKY".equalsIgnoreCase(t.getOutcome()))),
-            run -> tests.stream().anyMatch(t -> t.getRepositoryId().equals(run.getRepositoryId())
-                && t.getPrNumber() != null && t.getPrNumber() == run.getPrNumber()
-                && isPostPrediction(t.getExecutedAt(), run.getCreatedAt())),
-            run -> (int) tests.stream().filter(t -> t.getRepositoryId().equals(run.getRepositoryId())
-                && t.getPrNumber() != null && t.getPrNumber() == run.getPrNumber()
-                && !isPostPrediction(t.getExecutedAt(), run.getCreatedAt())).count()));
-
-        results.add(evaluateCategory(tenantId, repositoryId, OperationalRiskPredictor.CATEGORY_CHANGE_FAILURE, chronologicalRuns, itemsByRunAndCategory,
-            run -> deployments.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
-                && d.getPrNumber() != null && d.getPrNumber() == run.getPrNumber()
-                && isPostPrediction(d.getDeployedAt(), run.getCreatedAt())
-                && ("FAILED".equalsIgnoreCase(d.getOutcome()) || "ROLLED_BACK".equalsIgnoreCase(d.getOutcome()))),
-            run -> deployments.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
-                && d.getPrNumber() != null && d.getPrNumber() == run.getPrNumber()
-                && isPostPrediction(d.getDeployedAt(), run.getCreatedAt())),
-            run -> (int) deployments.stream().filter(d -> d.getRepositoryId().equals(run.getRepositoryId())
-                && d.getPrNumber() != null && d.getPrNumber() == run.getPrNumber()
-                && !isPostPrediction(d.getDeployedAt(), run.getCreatedAt())).count()));
-
-        results.add(evaluateCategory(tenantId, repositoryId, OperationalRiskPredictor.CATEGORY_INCIDENT, chronologicalRuns, itemsByRunAndCategory,
-            run -> incidents.stream().anyMatch(i -> i.getRepositoryId().equals(run.getRepositoryId())
-                && i.getRelatedPrNumber() != null && i.getRelatedPrNumber() == run.getPrNumber()
-                && isPostPrediction(i.getOccurredAt(), run.getCreatedAt())),
-            run -> incidents.stream().anyMatch(i -> i.getRepositoryId().equals(run.getRepositoryId())
-                && isPostPrediction(i.getOccurredAt(), run.getCreatedAt())),
-            run -> (int) incidents.stream().filter(i -> i.getRepositoryId().equals(run.getRepositoryId())
-                && i.getRelatedPrNumber() != null && i.getRelatedPrNumber() == run.getPrNumber()
-                && !isPostPrediction(i.getOccurredAt(), run.getCreatedAt())).count()));
-
-        auditService.recordCurrent("PREDICTION_EVALUATION_RUN", "MODEL_EVALUATION",
-            repositoryId != null ? repositoryId : "workspace",
-            "Executed chronological held-out evaluation across " + results.size() + " predictive categories");
-        return results;
     }
 
     private boolean isPostPrediction(Instant outcomeAt, Instant predictedAt) {

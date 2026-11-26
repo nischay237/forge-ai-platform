@@ -56,7 +56,7 @@ $env:FORGE_DEMO_PASSWORD = "<strong-local-demo-password>"
 ### Health Probes
 - Overall health: `GET /actuator/health` (unauthenticated; detailed component breakdown shown only when authorized)
 - Kubernetes / Render liveness probe: `GET /actuator/health/liveness`
-- Readiness probe: `GET /actuator/health/readiness`
+- Readiness probe: `GET /actuator/health/readiness` (used by `Dockerfile` and `backend/Dockerfile` `HEALTHCHECK`; unified `Dockerfile` launches the JVM via `exec java` so `SIGTERM` triggers Spring Boot graceful shutdown cleanly)
 
 ### Structured Logging & Correlation IDs
 - Every HTTP request passes through `CorrelationIdFilter`, which accepts a validated `X-Correlation-Id` header or generates a UUID, echoes `X-Correlation-Id` on the response, and binds `correlationId` + `tenantId` to SLF4J MDC.

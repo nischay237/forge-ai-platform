@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Download,
   FileCode2,
+  Search,
   ShieldAlert,
   ShieldCheck,
   X,
@@ -15,18 +16,21 @@ import {
 import { api } from '../lib/api';
 import { useForgeStore } from '../lib/store';
 import type { SecurityFinding } from '../lib/types';
-import { Badge, Button, EmptyState, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
+import { Badge, Button, EmptyState, ErrorBanner, PageHeader, PaginationBar, Panel, SkeletonBlock } from '../components/ui';
 import { downloadJsonFile, formatRelativeTime, severityClasses, statusClasses } from '../lib/utils';
 
 export function SecurityCenterPage() {
   const [severityFilter, setSeverityFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [page, setPage] = useState(1);
   const [exportRepoId, setExportRepoId] = useState('');
   const [suppressTarget, setSuppressTarget] = useState<SecurityFinding | null>(null);
   const [suppressReason, setSuppressReason] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
   const user = useForgeStore((s) => s.user);
   const isAdmin = user?.role === 'OWNER' || user?.role === 'ADMIN';
+  const isViewer = user?.role === 'VIEWER';
   const qc = useQueryClient();
 
   const repos = useQuery({ queryKey: ['repos'], queryFn: api.listRepos });
@@ -100,7 +104,21 @@ export function SecurityCenterPage() {
   };
 
   const summaryItems = allFindings.data ?? [];
-  const items = findings.data ?? [];
+  const items = (findings.data ?? []).filter((f) => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      f.title.toLowerCase().includes(q) ||
+      f.ruleId.toLowerCase().includes(q) ||
+      f.filePath.toLowerCase().includes(q) ||
+      f.scanner.toLowerCase().includes(q) ||
+      (f.cweId || '').toLowerCase().includes(q)
+    );
+  });
+  const PAGE_SIZE = 10;
+  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pagedItems = items.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
   const criticalCount = summaryItems.filter((i) => i.severity === 'CRITICAL' && i.status === 'OPEN').length;
   const highCount = summaryItems.filter((i) => i.severity === 'HIGH' && i.status === 'OPEN').length;
   const mitigatedCount = summaryItems.filter((i) => i.status === 'MITIGATED').length;
@@ -192,11 +210,27 @@ export function SecurityCenterPage() {
         <span className="text-xs font-mono text-stone-500">
           Showing {items.length} of {summaryItems.length} tracked security findings
         </span>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2 h-9 px-3 rounded-md bg-white border border-[#DCDCD5] focus-within:border-[#111111]">
+            <Search className="w-3.5 h-3.5 text-stone-400" />
+            <input
+              aria-label="Search security findings"
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setPage(1);
+              }}
+              placeholder="Search rule, CWE, file..."
+              className="bg-transparent text-xs text-[#111111] placeholder:text-stone-400 focus:outline-none w-44"
+            />
+          </div>
           <select
             aria-label="Filter by severity"
             value={severityFilter}
-            onChange={(e) => setSeverityFilter(e.target.value)}
+            onChange={(e) => {
+              setSeverityFilter(e.target.value);
+              setPage(1);
+            }}
             className="h-9 px-3 rounded-md bg-white border border-[#DCDCD5] text-xs text-[#111111] focus:outline-none focus:border-[#111111]"
           >
             <option value="">All Severities</option>
@@ -208,7 +242,10 @@ export function SecurityCenterPage() {
           <select
             aria-label="Filter by status"
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => {
+              setStatusFilter(e.target.value);
+              setPage(1);
+            }}
             className="h-9 px-3 rounded-md bg-white border border-[#DCDCD5] text-xs text-[#111111] focus:outline-none focus:border-[#111111]"
           >
             <option value="">All Statuses</option>
@@ -233,7 +270,7 @@ export function SecurityCenterPage() {
         />
       ) : (
         <div className="space-y-3">
-          {items.map((f) => (
+          {pagedItems.map((f) => (
             <Panel key={f.id} className="p-5 space-y-3">
               <div className="flex flex-col md:flex-row md:items-start justify-between gap-3">
                 <div className="space-y-1">
@@ -269,49 +306,51 @@ export function SecurityCenterPage() {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-1.5 shrink-0">
-                  {f.status !== 'MITIGATED' && (
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => triageMutation.mutate({ id: f.id, status: 'MITIGATED' })}
-                      disabled={triageMutation.isPending}
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
-                      Mitigated
-                    </Button>
-                  )}
-                  {isAdmin && f.fingerprint && f.status !== 'SUPPRESSED' && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setSuppressTarget(f)}
-                    >
-                      <Ban className="w-3.5 h-3.5" />
-                      Suppress
-                    </Button>
-                  )}
-                  {f.status !== 'FALSE_POSITIVE' && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => triageMutation.mutate({ id: f.id, status: 'FALSE_POSITIVE' })}
-                      disabled={triageMutation.isPending}
-                    >
-                      False Positive
-                    </Button>
-                  )}
-                  {f.status !== 'OPEN' && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => triageMutation.mutate({ id: f.id, status: 'OPEN' })}
-                      disabled={triageMutation.isPending}
-                    >
-                      Reopen
-                    </Button>
-                  )}
-                </div>
+                {!isViewer && (
+                  <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                    {f.status !== 'MITIGATED' && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => triageMutation.mutate({ id: f.id, status: 'MITIGATED' })}
+                        disabled={triageMutation.isPending}
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                        Mitigated
+                      </Button>
+                    )}
+                    {isAdmin && f.fingerprint && f.status !== 'SUPPRESSED' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setSuppressTarget(f)}
+                      >
+                        <Ban className="w-3.5 h-3.5" />
+                        Suppress
+                      </Button>
+                    )}
+                    {f.status !== 'FALSE_POSITIVE' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => triageMutation.mutate({ id: f.id, status: 'FALSE_POSITIVE' })}
+                        disabled={triageMutation.isPending}
+                      >
+                        False Positive
+                      </Button>
+                    )}
+                    {f.status !== 'OPEN' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => triageMutation.mutate({ id: f.id, status: 'OPEN' })}
+                        disabled={triageMutation.isPending}
+                      >
+                        Reopen
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
 
               {f.maskedEvidence && (
@@ -326,6 +365,12 @@ export function SecurityCenterPage() {
               </div>
             </Panel>
           ))}
+          <PaginationBar
+            page={currentPage}
+            pageSize={PAGE_SIZE}
+            totalItems={items.length}
+            onPageChange={setPage}
+          />
         </div>
       )}
 

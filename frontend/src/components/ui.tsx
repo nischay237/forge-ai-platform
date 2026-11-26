@@ -181,3 +181,57 @@ export function EmptyState({
     </div>
   );
 }
+
+export function PaginationBar({
+  page,
+  pageSize,
+  totalItems,
+  onPageChange,
+}: {
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  onPageChange: (nextPage: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  if (totalItems <= pageSize) {
+    return null;
+  }
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * pageSize + 1;
+  const end = Math.min(totalItems, safePage * pageSize);
+
+  return (
+    <nav
+      aria-label="Pagination"
+      className="flex flex-wrap items-center justify-between gap-3 pt-2 text-xs font-mono text-stone-600"
+    >
+      <span>
+        Showing {start}–{end} of {totalItems}
+      </span>
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          disabled={safePage <= 1}
+          onClick={() => onPageChange(safePage - 1)}
+        >
+          Previous
+        </Button>
+        <span className="px-2 tabular-nums">
+          Page {safePage} / {totalPages}
+        </span>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          disabled={safePage >= totalPages}
+          onClick={() => onPageChange(safePage + 1)}
+        >
+          Next
+        </Button>
+      </div>
+    </nav>
+  );
+}

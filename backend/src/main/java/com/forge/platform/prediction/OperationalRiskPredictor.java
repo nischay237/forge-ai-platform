@@ -237,6 +237,12 @@ public class OperationalRiskPredictor {
             double failRate = deploymentSamples > 0 ? (double) fv.serviceFailedDeploymentCount() / deploymentSamples : 0.0;
             int failWeight = Math.min(28, (int) Math.round(failRate * 35) + (int) Math.min(12, fv.serviceFailedDeploymentCount() * 6));
             score += failWeight;
+            Instant latestFailedAt = fv.serviceDeployments().stream()
+                .filter(d -> "FAILED".equalsIgnoreCase(d.getOutcome()))
+                .map(DeploymentRecordEntity::getDeployedAt)
+                .filter(Objects::nonNull)
+                .max(Comparator.naturalOrder())
+                .orElse(null);
             evidence.add(new PredictionCandidate.EvidenceDraft(
                 "HISTORICAL_DEPLOYMENTS",
                 "PRIOR_DEPLOYMENT_FAILURES",
@@ -245,7 +251,7 @@ public class OperationalRiskPredictor {
                     + " recorded deployments for service '" + fv.serviceName() + "'",
                 failWeight,
                 (int) fv.serviceFailedDeploymentCount(),
-                fv.serviceDeployments().get(0).getDeployedAt(),
+                latestFailedAt,
                 "deploy-fail:" + fv.serviceName()
             ));
         }
@@ -254,6 +260,12 @@ public class OperationalRiskPredictor {
         if (fv.serviceRollbackCount() > 0) {
             int rbWeight = Math.min(26, (int) fv.serviceRollbackCount() * 13);
             score += rbWeight;
+            Instant latestRollbackAt = fv.serviceDeployments().stream()
+                .filter(d -> "ROLLED_BACK".equalsIgnoreCase(d.getOutcome()))
+                .map(DeploymentRecordEntity::getDeployedAt)
+                .filter(Objects::nonNull)
+                .max(Comparator.naturalOrder())
+                .orElse(null);
             evidence.add(new PredictionCandidate.EvidenceDraft(
                 "HISTORICAL_ROLLBACKS",
                 "PRIOR_DEPLOYMENT_ROLLBACKS",
@@ -261,7 +273,7 @@ public class OperationalRiskPredictor {
                 fv.serviceRollbackCount() + " deployment rollback(s) recorded for service '" + fv.serviceName() + "'",
                 rbWeight,
                 (int) fv.serviceRollbackCount(),
-                fv.serviceDeployments().get(0).getDeployedAt(),
+                latestRollbackAt,
                 "deploy-rollback:" + fv.serviceName()
             ));
         }

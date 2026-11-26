@@ -2,6 +2,10 @@ package com.forge.platform.sse;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.forge.platform.repository.RepositoryEntity;
+import com.forge.platform.repository.RepositoryJpaRepository;
+import com.forge.platform.review.PullRequestReviewEntity;
+import com.forge.platform.review.PullRequestReviewRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,6 +33,8 @@ class SseOperationTrackingAndOrderingTest {
     @Autowired private ObjectMapper objectMapper;
     @Autowired private SseHubService sseHubService;
     @Autowired private MeterRegistry meterRegistry;
+    @Autowired private RepositoryJpaRepository repositoryJpaRepository;
+    @Autowired private PullRequestReviewRepository reviewRepository;
 
     private record TenantAuth(String token, String tenantId) {}
 
@@ -117,5 +123,81 @@ class SseOperationTrackingAndOrderingTest {
 
         // SSE active connections gauge is registered in Micrometer
         assertThat(meterRegistry.find("forge.sse.connections.active").gauge()).isNotNull();
+    }
+
+    @Test
+    void recoversPersistedOperationStateFromDatabaseAfterRestartAndEmitsEvaluationStages() throws Exception {
+        TenantAuth tenantA = register("FallbackAlpha");
+        TenantAuth tenantB = register("FallbackBeta");
+
+        // Persist a repository and completed PR review directly in DB without publishing any in-memory SSE events
+        // (simulating a browser refresh after server restart or cross-replica routing).
+        RepositoryEntity repo = RepositoryEntity.create(
+            tenantA.tenantId(), "acme", "billing-core-" + UUID.randomUUID().toString().substring(0, 4),
+            "main", "Java", "https://github.com/acme/billing-core", "Billing service"
+        );
+        repo.setIndexStatus("INDEXED");
+        repo.setFileCount(12);
+        repo.setSymbolCount(48);
+        repo.setDependencyCount(31);
+        repositoryJpaRepository.save(repo);
+
+        PullRequestReviewEntity review = PullRequestReviewEntity.queued(
+            tenantA.tenantId(), repo.getId(), 91, "Harden ledger idempotency",
+            "eng@acme.dev", "feat/ledger", "main", "abc123def456",
+            "diff --git a/Ledger.java b/Ledger.java\n--- a/Ledger.java\n+++ b/Ledger.java\n@@ -1 +1,2 @@\n+int x = 1;\n",
+            "v1"
+        );
+        review.setStatus("COMPLETED");
+        review.setCurrentStage("COMPLETED");
+        review.setRiskScore(38);
+        review.setMergeDecision("WARN");
+        reviewRepository.save(review);
+
+        String reviewOpId = PipelineEvent.buildOperationId("PR_REVIEW", review.getId());
+        String repoOpId = PipelineEvent.buildOperationId("REPO_INDEX", repo.getId());
+
+        // Tenant A recovers persisted PR_REVIEW and REPO_INDEX snapshots cleanly despite empty in-memory SSE buffer
+        mockMvc.perform(get("/api/v1/stream/operations/" + reviewOpId)
+                .header("Authorization", "Bearer " + tenantA.token()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.operationId").value(reviewOpId))
+            .andExpect(jsonPath("$.status").value("COMPLETED"))
+            .andExpect(jsonPath("$.completedStages").value(8))
+            .andExpect(jsonPath("$.events[0].details.recoveredFromDatabase").value(true))
+            .andExpect(jsonPath("$.events[0].details.mergeDecision").value("WARN"));
+
+        mockMvc.perform(get("/api/v1/stream/operations").param("resourceId", repo.getId())
+                .header("Authorization", "Bearer " + tenantA.token()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(1))
+            .andExpect(jsonPath("$[0].operationId").value(repoOpId))
+            .andExpect(jsonPath("$[0].status").value("COMPLETED"))
+            .andExpect(jsonPath("$[0].events[0].details.recoveredFromDatabase").value(true));
+
+        // Tenant B MUST NOT recover Tenant A's persisted operations (strict cross-tenant isolation)
+        mockMvc.perform(get("/api/v1/stream/operations/" + reviewOpId)
+                .header("Authorization", "Bearer " + tenantB.token()))
+            .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/v1/stream/operations").param("resourceId", repo.getId())
+                .header("Authorization", "Bearer " + tenantB.token()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()").value(0));
+
+        // Running chronological held-out evaluation emits all 4 PREDICTION_EVALUATION SSE stages
+        mockMvc.perform(post("/api/v1/predictions/evaluations/run")
+                .header("Authorization", "Bearer " + tenantA.token()))
+            .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/v1/stream/operations/PREDICTION_EVALUATION:workspace")
+                .header("Authorization", "Bearer " + tenantA.token()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("COMPLETED"))
+            .andExpect(jsonPath("$.totalStages").value(4))
+            .andExpect(jsonPath("$.events.length()").value(4))
+            .andExpect(jsonPath("$.events[0].stage").value("LOADING_PREDICTION_HISTORY"))
+            .andExpect(jsonPath("$.events[1].stage").value("LOADING_CONFIRMED_OUTCOMES"))
+            .andExpect(jsonPath("$.events[2].stage").value("EVALUATING_HELD_OUT_SPLITS"))
+            .andExpect(jsonPath("$.events[3].stage").value("EVALUATION_COMPLETED"));
     }
 }

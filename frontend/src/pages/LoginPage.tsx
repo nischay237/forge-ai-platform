@@ -45,7 +45,7 @@ export function LoginPage() {
         <div className="hidden sm:flex items-center gap-6 text-xs font-mono text-stone-500">
           <span>Java 21 LTS</span>
           <span>Spring Boot 3.5</span>
-          <span>Deterministic Risk Engine</span>
+          <span>Predictive Risk Engine</span>
           <span>AST + Security Intel</span>
         </div>
       </header>
@@ -70,19 +70,19 @@ export function LoginPage() {
           <div className="bg-white p-8 sm:p-10 shadow-[0_20px_60px_rgba(15,23,42,0.12)] border border-white/80 space-y-5">
             <div className="inline-flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.12em] text-stone-500">
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
-              Change Impact &amp; Risk Intelligence · Java 21 + Spring Boot
+              Predictive Engineering &amp; Change Impact Intelligence · Java 21 + Spring Boot
             </div>
 
             <h1 className="text-3xl sm:text-[42px] font-medium tracking-[-0.04em] leading-[1.08] text-[#111111]">
               <span className="bg-[#EFE8FF]/85 px-1.5 box-decoration-clone">
-                Understand the impact of every code change before it reaches production.
+                Understand the impact of every code change. Predict what could fail before production.
               </span>
             </h1>
 
             <p className="text-sm sm:text-[15px] text-stone-700 leading-relaxed max-w-xl">
-              Deterministic AST dependency impact, OpenAPI &amp; SQL migration compatibility,
-              entropy &amp; SCA security scanning, and Policy-as-Code merge decisions
-              (PASS / WARN / BLOCK) backed by explicit evidence.
+              Deterministic AST dependency impact, explainable defect, test failure, incident &amp; rollback risk
+              baselines, OpenAPI &amp; SQL migration checks, security scanning, and Policy-as-Code merge decisions
+              backed by explicit evidence.
             </p>
           </div>
 
@@ -103,8 +103,8 @@ export function LoginPage() {
               {
                 icon: Activity,
                 iconColor: 'text-amber-700',
-                title: 'Explainable Risk',
-                items: ['Policy-as-Code PASS/WARN/BLOCK', 'Human sign-off gate', 'Per-tenant HMAC webhooks'],
+                title: 'Predictive Risk',
+                items: ['Bug, test & rollback baselines', 'Chronological held-out eval', 'Policy-as-Code PASS/WARN/BLOCK'],
               },
             ].map((card) => {
               const Icon = card.icon;

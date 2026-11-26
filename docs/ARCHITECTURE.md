@@ -64,8 +64,8 @@ sequenceDiagram
 ```
 
 ## 2b. Real-Time SSE Processing Protocol & Recovery
-- Every backend pipeline (`PR_REVIEW` 8 stages, `PR_PREDICTION` 5 stages, `REPO_INDEX` 4 stages) emits structured `PipelineEvent` records carrying `eventId`, `operationId`, `correlationId`, monotonic `sequence`, `stage`, `stageLabel`, `status` (`STARTED` | `IN_PROGRESS` | `COMPLETED` | `FAILED`), `stageIndex`, `totalStages`, factual `message`, structured `details`, and `timestamp`.
-- `SseHubService` records every stage into a bounded per-tenant `OperationStatusSnapshot` ring buffer even when zero browser clients are attached.
+- Every backend pipeline (`PR_REVIEW` 8 stages, `PR_PREDICTION` 5 stages, `REPO_INDEX` 4 stages, `PREDICTION_EVALUATION` 4 stages) emits structured `PipelineEvent` records carrying `eventId`, `operationId`, `correlationId`, monotonic `sequence`, `stage`, `stageLabel`, `status` (`STARTED` | `IN_PROGRESS` | `COMPLETED` | `FAILED`), `stageIndex`, `totalStages`, factual `message`, structured `details`, and `timestamp`.
+- `SseHubService` records every stage into a bounded per-tenant `OperationStatusSnapshot` ring buffer even when zero browser clients are attached, and delegates to tenant-scoped `OperationStatusFallbackProvider` implementations (`ReviewPipelineService`, `PredictionPipelineService`, `RepositoryService`) when an operation is absent from memory (e.g., after a process restart or cross-replica refresh).
 - On initial mount, browser refresh, or SSE reconnect, the frontend subscribes to `/api/v1/stream/events?ticket=...` and hydrates `/api/v1/stream/operations` so no stage transition is lost. Client state merges strictly by `eventId` deduplication and monotonic `sequence`, preventing duplicate rows, out-of-order regressions, or terminal state re-opening. Zero synthetic timers or fabricated percentages are used.
 
 ## 3. Database Schema Overview (Flyway V1–V6)

@@ -22,6 +22,7 @@ export function OverviewPage() {
   const navigate = useNavigate();
   const user = useForgeStore((s) => s.user);
   const isAdmin = user?.role === 'OWNER' || user?.role === 'ADMIN';
+  const isViewer = user?.role === 'VIEWER';
 
   const overview = useQuery({ queryKey: ['overview'], queryFn: api.getOverview });
   const predOverview = useQuery({ queryKey: ['prediction-overview'], queryFn: api.getPredictionOverview });
@@ -61,7 +62,7 @@ export function OverviewPage() {
             <Button variant="secondary" onClick={() => navigate('/code-intel')}>
               Explore AST Graph
             </Button>
-            <Button onClick={() => navigate('/reviews?new=1')}>Run PR Review</Button>
+            {!isViewer && <Button onClick={() => navigate('/reviews?new=1')}>Run PR Review</Button>}
           </>
         }
       />
@@ -99,14 +100,18 @@ export function OverviewPage() {
             />
             <KpiCell
               label="CI Success · Eval F1"
-              value={`${data.ciSuccessRatePct}%`}
+              value={data.totalCiBuilds === 0 ? '—' : `${data.ciSuccessRatePct}%`}
               meta={
-                data.latestEvalF1 != null
-                  ? `Eval F1 ${(data.latestEvalF1 * 100).toFixed(1)}% · ${data.totalCiBuilds} builds`
-                  : `${data.totalCiBuilds} builds recorded`
+                data.totalCiBuilds === 0
+                  ? data.latestEvalF1 != null
+                    ? `Eval F1 ${(data.latestEvalF1 * 100).toFixed(1)}% · No builds recorded`
+                    : 'No builds recorded yet'
+                  : data.latestEvalF1 != null
+                    ? `Eval F1 ${(data.latestEvalF1 * 100).toFixed(1)}% · ${data.totalCiBuilds} builds`
+                    : `${data.totalCiBuilds} builds recorded`
               }
               icon={Gauge}
-              accent="text-emerald-700"
+              accent={data.totalCiBuilds === 0 ? 'text-stone-400' : 'text-emerald-700'}
               onClick={() => navigate('/analytics')}
             />
           </div>
@@ -208,6 +213,10 @@ export function OverviewPage() {
               <div className="p-4 space-y-2.5">
                 <SkeletonBlock className="h-14" />
                 <SkeletonBlock className="h-14" />
+              </div>
+            ) : (reviews.data ?? []).length === 0 ? (
+              <div className="p-6 text-center text-xs text-stone-500">
+                No pull request reviews recorded yet. Import a GitHub PR or submit a diff to begin.
               </div>
             ) : (
               (reviews.data ?? []).slice(0, 5).map((r) => (
@@ -330,6 +339,10 @@ export function OverviewPage() {
                   onRetry={() => builds.refetch()}
                 />
               </div>
+            ) : (builds.data ?? []).length === 0 ? (
+              <div className="p-5 text-xs text-stone-500">
+                No CI pipeline builds recorded yet. Submit a build log in CI Intelligence to diagnose failures.
+              </div>
             ) : (
               (builds.data ?? []).slice(0, 4).map((b) => (
                 <Link
@@ -377,6 +390,10 @@ export function OverviewPage() {
                   message={audits.error instanceof Error ? audits.error.message : 'Failed to load audit logs'}
                   onRetry={() => audits.refetch()}
                 />
+              </div>
+            ) : (audits.data ?? []).length === 0 ? (
+              <div className="p-5 text-xs text-stone-500">
+                No recent workspace audit events recorded yet.
               </div>
             ) : (
               (audits.data ?? []).slice(0, 5).map((a) => (

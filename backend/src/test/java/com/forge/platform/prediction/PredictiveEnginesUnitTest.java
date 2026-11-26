@@ -179,6 +179,88 @@ class PredictiveEnginesUnitTest {
         assertThat(EngineeringRiskAggregator.POLICY_BOUNDARY_NOTE).containsIgnoringCase("NEVER automatically block");
     }
 
+    @Test
+    void performanceAnalyzerTracksLoopBraceDepthAccuratelyAndDeduplicatesRepeatedStaticWarnings() {
+        String nonNestedDiff = """
+            diff --git a/src/main/java/com/acme/reporting/ReportQueryService.java b/src/main/java/com/acme/reporting/ReportQueryService.java
+            --- a/src/main/java/com/acme/reporting/ReportQueryService.java
+            +++ b/src/main/java/com/acme/reporting/ReportQueryService.java
+            @@ -1,2 +1,16 @@
+             public class ReportQueryService {
+            +    public void run(List<String> rows, List<String> summaries) {
+            +        for (String r : rows) {
+            +            if (r != null) {
+            +                log.debug(r);
+            +            }
+            +        }
+            +        for (String s : summaries) {
+            +            log.debug(s);
+            +        }
+            +        String q1 = "SELECT * FROM audit_logs";
+            +        String q2 = "SELECT * FROM review_findings";
+            +        String q3 = "SELECT * FROM repositories";
+            +    }
+             }
+            """;
+
+        PrFeatureExtractor.PrFeatureVector fv = buildVector(
+            nonNestedDiff, false, false, false, false, 0, 0, 0,
+            List.of(), List.of(), Map.of(), List.of(), List.of()
+        );
+        PredictionCandidate.CategoryPredictionDraft perf = performanceAnalyzer.analyze(fv);
+
+        assertThat(perf.evidence())
+            .extracting(PredictionCandidate.EvidenceDraft::evidenceType)
+            .doesNotContain("PERF_NESTED_LOOP_COMPLEXITY");
+        long expensiveQueryEvidenceCount = perf.evidence().stream()
+            .filter(e -> "PERF_EXPENSIVE_DB_QUERY".equals(e.evidenceType()))
+            .count();
+        assertThat(expensiveQueryEvidenceCount).isEqualTo(1L);
+    }
+
+    @Test
+    void operationalRiskUsesActualFailedAndRollbackTimestampsRatherThanLatestSuccessfulDeploy() {
+        String diff = """
+            diff --git a/src/main/java/com/acme/payments/CheckoutConfig.java b/src/main/java/com/acme/payments/CheckoutConfig.java
+            --- a/src/main/java/com/acme/payments/CheckoutConfig.java
+            +++ b/src/main/java/com/acme/payments/CheckoutConfig.java
+            @@ -1,2 +1,4 @@
+             public class CheckoutConfig {
+            +    private final int timeoutMs = 5000;
+             }
+            """;
+
+        Instant latestSuccessAt = Instant.parse("2026-04-02T12:00:00Z");
+        Instant failedAt = Instant.parse("2026-03-10T08:30:00Z");
+        Instant rollbackAt = Instant.parse("2026-03-15T14:45:00Z");
+
+        DeploymentRecordEntity latestSuccess = DeploymentRecordEntity.create(
+            "t1", "r1", "payments-api", "production", 20, "sha20", "SUCCEEDED", null, false, "Healthy", "dep-ok", latestSuccessAt
+        );
+        DeploymentRecordEntity rolledBack = DeploymentRecordEntity.create(
+            "t1", "r1", "payments-api", "production", 15, "sha15", "ROLLED_BACK", null, false, "Reverted", "dep-rb", rollbackAt
+        );
+        DeploymentRecordEntity failed = DeploymentRecordEntity.create(
+            "t1", "r1", "payments-api", "production", 10, "sha10", "FAILED", null, true, "CrashLoop", "dep-fail", failedAt
+        );
+
+        PrFeatureExtractor.PrFeatureVector fv = buildVector(
+            diff, false, false, true, false, 0, 0, 0,
+            List.of(), List.of(), Map.of(), List.of(latestSuccess, rolledBack, failed), List.of()
+        );
+        PredictionCandidate.CategoryPredictionDraft cf = operationalRiskPredictor.predictChangeFailureRisk(fv);
+
+        var failedEvidence = cf.evidence().stream()
+            .filter(e -> "PRIOR_DEPLOYMENT_FAILURES".equals(e.evidenceType()))
+            .findFirst().orElseThrow();
+        var rollbackEvidence = cf.evidence().stream()
+            .filter(e -> "PRIOR_DEPLOYMENT_ROLLBACKS".equals(e.evidenceType()))
+            .findFirst().orElseThrow();
+
+        assertThat(failedEvidence.observedAt()).isEqualTo(failedAt);
+        assertThat(rollbackEvidence.observedAt()).isEqualTo(rollbackAt);
+    }
+
     private PrFeatureExtractor.PrFeatureVector buildVector(
         String rawDiff,
         boolean criticalPath,

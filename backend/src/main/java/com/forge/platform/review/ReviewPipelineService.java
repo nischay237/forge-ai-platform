@@ -25,6 +25,8 @@ import com.forge.platform.repository.RepositoryEntity;
 import com.forge.platform.repository.RepositoryJpaRepository;
 import com.forge.platform.repository.RepositoryService;
 import com.forge.platform.security.SecurityService;
+import com.forge.platform.sse.OperationStatusFallbackProvider;
+import com.forge.platform.sse.OperationStatusSnapshot;
 import com.forge.platform.sse.PipelineEvent;
 import com.forge.platform.sse.SseHubService;
 import io.micrometer.core.instrument.Counter;
@@ -45,12 +47,13 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Service
-public class ReviewPipelineService implements DomainEventHandler {
+public class ReviewPipelineService implements DomainEventHandler, OperationStatusFallbackProvider {
 
     private static final Logger log = LoggerFactory.getLogger(ReviewPipelineService.class);
     private static final Set<String> VALID_DECISIONS = Set.of("APPROVED", "DISMISSED", "PENDING");
@@ -772,5 +775,83 @@ public class ReviewPipelineService implements DomainEventHandler {
             r.getCreatedAt(),
             r.getCompletedAt()
         );
+    }
+
+    @Override
+    public List<String> supportedEventTypes() {
+        return List.of("PR_REVIEW");
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<OperationStatusSnapshot> findFallbackSnapshot(String tenantId, String eventType, String resourceId) {
+        if (!"PR_REVIEW".equals(eventType) || resourceId == null || resourceId.isBlank()) {
+            return Optional.empty();
+        }
+        return reviewRepository.findByIdAndTenantId(resourceId, tenantId).map(review -> {
+            String rawStatus = review.getStatus() != null ? review.getStatus().toUpperCase() : "QUEUED";
+            String snapshotStatus;
+            String stage;
+            String label;
+            int completedStages;
+            String eventStatus;
+            if ("COMPLETED".equals(rawStatus)) {
+                snapshotStatus = "COMPLETED";
+                stage = "COMPLETED";
+                label = "Review complete & persisted";
+                completedStages = 8;
+                eventStatus = "COMPLETED";
+            } else if ("FAILED".equals(rawStatus)) {
+                snapshotStatus = "FAILED";
+                stage = "FAILED";
+                label = "Review pipeline failed";
+                completedStages = 0;
+                eventStatus = "FAILED";
+            } else {
+                snapshotStatus = "RUNNING";
+                stage = (review.getCurrentStage() != null && !review.getCurrentStage().isBlank())
+                    ? review.getCurrentStage() : "QUEUED";
+                label = "In progress (" + stage + ")";
+                completedStages = "QUEUED".equals(stage) ? 0 : 1;
+                eventStatus = "QUEUED".equals(stage) ? "STARTED" : "IN_PROGRESS";
+            }
+
+            Instant startedAt = review.getCreatedAt();
+            Instant updatedAt = review.getCompletedAt() != null ? review.getCompletedAt() : startedAt;
+            Map<String, Object> details = new HashMap<>();
+            details.put("recoveredFromDatabase", true);
+            details.put("prNumber", review.getPrNumber());
+            details.put("riskScore", review.getRiskScore());
+            details.put("mergeDecision", review.getMergeDecision());
+
+            PipelineEvent recoveredEvent = PipelineEvent.stage(
+                "PR_REVIEW",
+                review.getId(),
+                stage,
+                label,
+                eventStatus,
+                Math.max(1, completedStages),
+                8,
+                "Recovered persisted review state (" + rawStatus + ") for PR #" + review.getPrNumber(),
+                details
+            ).withSequence(1L);
+
+            return new OperationStatusSnapshot(
+                PipelineEvent.buildOperationId("PR_REVIEW", review.getId()),
+                "PR_REVIEW",
+                review.getId(),
+                recoveredEvent.correlationId(),
+                snapshotStatus,
+                stage,
+                label,
+                completedStages,
+                8,
+                1L,
+                startedAt,
+                updatedAt,
+                review.getCompletedAt(),
+                List.of(recoveredEvent)
+            );
+        });
     }
 }

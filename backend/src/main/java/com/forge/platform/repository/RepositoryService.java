@@ -7,16 +7,22 @@ import com.forge.platform.common.SecretCryptoService;
 import com.forge.platform.common.TenantContext;
 import com.forge.platform.messaging.ForgeTopics;
 import com.forge.platform.messaging.OutboxService;
+import com.forge.platform.sse.OperationStatusFallbackProvider;
+import com.forge.platform.sse.OperationStatusSnapshot;
+import com.forge.platform.sse.PipelineEvent;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
-public class RepositoryService {
+public class RepositoryService implements OperationStatusFallbackProvider {
 
     private final RepositoryJpaRepository repositoryJpaRepository;
     private final SourceFileJpaRepository sourceFileJpaRepository;
@@ -295,5 +301,85 @@ public class RepositoryService {
             }
             """.formatted(pkg));
         return files;
+    }
+
+    @Override
+    public List<String> supportedEventTypes() {
+        return List.of("REPO_INDEX");
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<OperationStatusSnapshot> findFallbackSnapshot(String tenantId, String eventType, String resourceId) {
+        if (!"REPO_INDEX".equals(eventType) || resourceId == null || resourceId.isBlank()) {
+            return Optional.empty();
+        }
+        return repositoryJpaRepository.findByIdAndTenantId(resourceId, tenantId).map(repo -> {
+            String rawStatus = repo.getIndexStatus() != null ? repo.getIndexStatus().toUpperCase() : "PENDING";
+            String snapshotStatus;
+            String stage;
+            String label;
+            int completedStages;
+            String eventStatus;
+            Instant completedAt = null;
+            if ("INDEXED".equals(rawStatus)) {
+                snapshotStatus = "COMPLETED";
+                stage = "COMPLETED";
+                label = "AST index & dependency graph ready";
+                completedStages = 4;
+                eventStatus = "COMPLETED";
+                completedAt = repo.getLastIndexedAt() != null ? repo.getLastIndexedAt() : repo.getCreatedAt();
+            } else if ("FAILED".equals(rawStatus)) {
+                snapshotStatus = "FAILED";
+                stage = "FAILED";
+                label = "Repository indexing failed";
+                completedStages = 0;
+                eventStatus = "FAILED";
+                completedAt = repo.getLastIndexedAt();
+            } else {
+                snapshotStatus = "RUNNING";
+                stage = "PARSING_AST";
+                label = "Indexing repository source files";
+                completedStages = 1;
+                eventStatus = "IN_PROGRESS";
+            }
+
+            Instant updatedAt = completedAt != null ? completedAt : repo.getCreatedAt();
+            Map<String, Object> details = new HashMap<>();
+            details.put("recoveredFromDatabase", true);
+            details.put("repository", repo.getFullName());
+            details.put("files", repo.getFileCount());
+            details.put("symbols", repo.getSymbolCount());
+            details.put("dependencies", repo.getDependencyCount());
+
+            PipelineEvent recoveredEvent = PipelineEvent.stage(
+                "REPO_INDEX",
+                repo.getId(),
+                stage,
+                label,
+                eventStatus,
+                Math.max(1, completedStages),
+                4,
+                "Recovered persisted index state (" + rawStatus + ") for " + repo.getFullName(),
+                details
+            ).withSequence(1L);
+
+            return new OperationStatusSnapshot(
+                PipelineEvent.buildOperationId("REPO_INDEX", repo.getId()),
+                "REPO_INDEX",
+                repo.getId(),
+                recoveredEvent.correlationId(),
+                snapshotStatus,
+                stage,
+                label,
+                completedStages,
+                4,
+                1L,
+                repo.getCreatedAt(),
+                updatedAt,
+                completedAt,
+                List.of(recoveredEvent)
+            );
+        });
     }
 }

@@ -55,6 +55,10 @@ public class PrFeatureExtractor {
     private static final Pattern REQUEST_PATH_PATTERN = Pattern.compile(
         "(?i)(controller|endpoint|handler|filter|gateway|router|checkout|payment|settlement|order|auth)"
     );
+    private static final Set<String> GENERIC_MODULE_STOPWORDS = Set.of(
+        "general", "core", "common", "service", "util", "utils", "model", "config", "test", "tests", "main", "java"
+    );
+    private static final Pattern DIFF_TARGET_HEADER = Pattern.compile("(?m)^(?:\\+\\+\\+ b/|diff --git a/\\S+ b/)(\\S+)");
 
     public record TestHistoryStats(
         String testName,
@@ -324,10 +328,15 @@ public class PrFeatureExtractor {
 
         Map<String, Integer> priorFileChangeCount = new HashMap<>();
         for (PullRequestReviewEntity prev : priorReviews) {
-            String prevDiff = prev.getRawDiff() == null ? "" : prev.getRawDiff();
+            Set<String> prevChangedFiles = extractDiffHeaderPaths(prev.getRawDiff());
             for (String path : changedPaths) {
-                String simple = CodeIntelligenceService.extractSimpleName(path);
-                if (prevDiff.contains(path) || (!simple.isBlank() && prevDiff.contains(simple + "."))) {
+                String normPath = normalizePath(path);
+                boolean matched = prevChangedFiles.stream().anyMatch(pf ->
+                    pf.equalsIgnoreCase(normPath)
+                        || pf.endsWith("/" + normPath)
+                        || normPath.endsWith("/" + pf)
+                );
+                if (matched) {
                     priorFileChangeCount.merge(path, 1, Integer::sum);
                 }
             }
@@ -458,14 +467,33 @@ public class PrFeatureExtractor {
         return false;
     }
 
+    private Set<String> extractDiffHeaderPaths(String rawDiff) {
+        Set<String> paths = new LinkedHashSet<>();
+        if (rawDiff == null || rawDiff.isBlank()) {
+            return paths;
+        }
+        var matcher = DIFF_TARGET_HEADER.matcher(rawDiff);
+        while (matcher.find()) {
+            String p = normalizePath(matcher.group(1));
+            if (!p.isBlank() && !"/dev/null".equals(p)) {
+                paths.add(p);
+            }
+        }
+        return paths;
+    }
+
     private boolean ciBuildMatchesChange(CiBuildEntity build, List<String> changedPaths, Set<String> modules) {
         String log = build.getRawLog() == null ? "" : build.getRawLog();
         for (String path : changedPaths) {
             String simple = CodeIntelligenceService.extractSimpleName(path);
             if (simple.length() >= 4 && log.contains(simple)) return true;
         }
+        String lowerLog = log.toLowerCase(Locale.ROOT);
         for (String m : modules) {
-            if (m.length() >= 4 && log.toLowerCase(Locale.ROOT).contains(m.toLowerCase(Locale.ROOT))) return true;
+            String lowerMod = m.toLowerCase(Locale.ROOT);
+            if (lowerMod.length() >= 4 && !GENERIC_MODULE_STOPWORDS.contains(lowerMod) && lowerLog.contains(lowerMod)) {
+                return true;
+            }
         }
         return false;
     }

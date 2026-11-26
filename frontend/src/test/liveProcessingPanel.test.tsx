@@ -247,4 +247,48 @@ describe('Real-Time SSE Processing Timeline & State Reducer', () => {
       ).toBeGreaterThanOrEqual(1);
     });
   });
+
+  it('renders 4-stage PREDICTION_EVALUATION held-out evaluation timeline cleanly', () => {
+    useForgeStore.getState().pushPipelineEvent(
+      makeEvent({
+        eventId: 'ev-1',
+        operationId: 'PREDICTION_EVALUATION:workspace',
+        eventType: 'PREDICTION_EVALUATION',
+        resourceId: 'workspace',
+        sequence: 1,
+        stage: 'LOADING_PREDICTION_HISTORY',
+        stageLabel: 'Loading historical pre-outcome prediction runs',
+        status: 'STARTED',
+        stageIndex: 1,
+        totalStages: 4,
+        message: 'Querying stored prediction runs for all repositories',
+      })
+    );
+    useForgeStore.getState().pushPipelineEvent(
+      makeEvent({
+        eventId: 'ev-4',
+        operationId: 'PREDICTION_EVALUATION:workspace',
+        eventType: 'PREDICTION_EVALUATION',
+        resourceId: 'workspace',
+        sequence: 4,
+        stage: 'EVALUATION_COMPLETED',
+        stageLabel: 'Held-out evaluation complete',
+        status: 'COMPLETED',
+        stageIndex: 4,
+        totalStages: 4,
+        message: 'Evaluated 4 predictive categories (1 with sufficient labelled data)',
+        details: { categories: 4, evaluatedCategories: 1 },
+      })
+    );
+
+    render(
+      <MemoryRouter>
+        <LiveProcessingPanel eventTypes={['PREDICTION_EVALUATION']} autoRecover={false} />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText('Held-Out Model Evaluation')).toBeInTheDocument();
+    expect(screen.getByText('Completed · 4 stages')).toBeInTheDocument();
+    expect(screen.getAllByText(/Evaluated 4 predictive categories/i).length).toBeGreaterThanOrEqual(1);
+  });
 });

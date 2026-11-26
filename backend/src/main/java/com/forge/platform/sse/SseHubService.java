@@ -7,6 +7,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -15,6 +16,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -35,11 +37,16 @@ public class SseHubService {
 
     private final Map<String, List<SseEmitter>> emittersByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, TrackedOperation>> operationsByTenant = new ConcurrentHashMap<>();
+    private final ObjectProvider<OperationStatusFallbackProvider> fallbackProviders;
     private final AtomicInteger activeConnections = new AtomicInteger(0);
     private final Counter eventsDeliveredCounter;
     private final Counter eventsDroppedCounter;
 
-    public SseHubService(MeterRegistry meterRegistry) {
+    public SseHubService(
+        MeterRegistry meterRegistry,
+        ObjectProvider<OperationStatusFallbackProvider> fallbackProviders
+    ) {
+        this.fallbackProviders = fallbackProviders;
         Gauge.builder("forge.sse.connections.active", activeConnections, AtomicInteger::get)
             .description("Active tenant-scoped SSE client connections")
             .register(meterRegistry);
@@ -117,24 +124,72 @@ public class SseHubService {
 
     public Optional<OperationStatusSnapshot> getOperationSnapshot(String tenantId, String operationId) {
         Map<String, TrackedOperation> tenantOps = operationsByTenant.get(tenantId);
-        if (tenantOps == null) {
-            return Optional.empty();
+        if (tenantOps != null) {
+            TrackedOperation op = tenantOps.get(operationId);
+            if (op != null) {
+                return Optional.of(op.toSnapshot());
+            }
         }
-        TrackedOperation op = tenantOps.get(operationId);
-        return op != null ? Optional.of(op.toSnapshot()) : Optional.empty();
+        return findFallbackByOperationId(tenantId, operationId);
     }
 
     public List<OperationStatusSnapshot> listRecentOperations(String tenantId, String resourceId) {
+        Map<String, OperationStatusSnapshot> combined = new LinkedHashMap<>();
         Map<String, TrackedOperation> tenantOps = operationsByTenant.get(tenantId);
-        if (tenantOps == null || tenantOps.isEmpty()) {
-            return List.of();
+        if (tenantOps != null && !tenantOps.isEmpty()) {
+            tenantOps.values().stream()
+                .filter(op -> resourceId == null || resourceId.isBlank() || resourceId.equals(op.resourceId))
+                .map(TrackedOperation::toSnapshot)
+                .forEach(snap -> combined.put(snap.operationId(), snap));
         }
-        return tenantOps.values().stream()
-            .filter(op -> resourceId == null || resourceId.isBlank() || resourceId.equals(op.resourceId))
-            .map(TrackedOperation::toSnapshot)
-            .sorted(Comparator.comparing(OperationStatusSnapshot::updatedAt).reversed())
+
+        // Restart-proof fallback: if caller requested a specific resourceId and an operation is not in memory,
+        // hydrate persisted state from tenant-scoped domain fallback providers.
+        if (resourceId != null && !resourceId.isBlank() && fallbackProviders != null) {
+            for (OperationStatusFallbackProvider provider : fallbackProviders) {
+                for (String eventType : provider.supportedEventTypes()) {
+                    String candidateOpId = PipelineEvent.buildOperationId(eventType, resourceId);
+                    if (!combined.containsKey(candidateOpId)) {
+                        try {
+                            provider.findFallbackSnapshot(tenantId, eventType, resourceId)
+                                .ifPresent(snap -> combined.putIfAbsent(snap.operationId(), snap));
+                        } catch (Exception ex) {
+                            log.debug("SSE fallback lookup skipped for {}: {}", candidateOpId, ex.getMessage());
+                        }
+                    }
+                }
+            }
+        }
+
+        return combined.values().stream()
+            .sorted(Comparator.comparing(OperationStatusSnapshot::updatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
             .limit(20)
             .toList();
+    }
+
+    private Optional<OperationStatusSnapshot> findFallbackByOperationId(String tenantId, String operationId) {
+        if (operationId == null || fallbackProviders == null) {
+            return Optional.empty();
+        }
+        int sep = operationId.indexOf(':');
+        if (sep <= 0 || sep >= operationId.length() - 1) {
+            return Optional.empty();
+        }
+        String eventType = operationId.substring(0, sep);
+        String resourceId = operationId.substring(sep + 1);
+        for (OperationStatusFallbackProvider provider : fallbackProviders) {
+            if (provider.supportedEventTypes().contains(eventType)) {
+                try {
+                    Optional<OperationStatusSnapshot> found = provider.findFallbackSnapshot(tenantId, eventType, resourceId);
+                    if (found.isPresent()) {
+                        return found;
+                    }
+                } catch (Exception ex) {
+                    log.debug("SSE fallback lookup failed for {}: {}", operationId, ex.getMessage());
+                }
+            }
+        }
+        return Optional.empty();
     }
 
     private PipelineEvent recordOperationEvent(String tenantId, PipelineEvent event) {

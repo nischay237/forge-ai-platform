@@ -3,7 +3,9 @@ package com.forge.platform.prediction;
 import com.forge.platform.review.UnifiedDiffParser;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
@@ -87,12 +89,16 @@ public class PerformanceRegressionAnalyzer {
                 ));
             }
 
-            // Track lexical loop nesting across added lines in this diff file
-            int loopDepth = 0;
-            int braceDepthInLoops = 0;
+            // Track lexical loop nesting accurately using a brace-depth stack + per-file pattern deduplication
+            int braceDepth = 0;
+            Deque<Integer> loopEntryDepths = new ArrayDeque<>();
             boolean reportedNPlus1 = false;
             boolean reportedNestedLoop = false;
             boolean reportedSyncInLoop = false;
+            boolean reportedSyncPath = false;
+            boolean reportedExpensiveQuery = false;
+            boolean reportedMemoryHeavy = false;
+            boolean reportedCacheEvict = false;
 
             for (UnifiedDiffParser.DiffLine line : file.addedLines()) {
                 String content = line.content();
@@ -102,9 +108,10 @@ public class PerformanceRegressionAnalyzer {
                 }
 
                 boolean opensLoop = LOOP_OPEN.matcher(content).find();
+                int loopEntryDepth = braceDepth;
                 if (opensLoop) {
-                    loopDepth++;
-                    if (loopDepth >= 2 && !reportedNestedLoop) {
+                    loopEntryDepths.push(loopEntryDepth);
+                    if (loopEntryDepths.size() >= 2 && !reportedNestedLoop) {
                         reportedNestedLoop = true;
                         int w = 18;
                         score += w;
@@ -124,17 +131,9 @@ public class PerformanceRegressionAnalyzer {
                     }
                 }
 
-                if (loopDepth > 0) {
-                    for (char ch : content.toCharArray()) {
-                        if (ch == '{') braceDepthInLoops++;
-                        else if (ch == '}') {
-                            braceDepthInLoops = Math.max(0, braceDepthInLoops - 1);
-                            if (braceDepthInLoops == 0) {
-                                loopDepth = Math.max(0, loopDepth - 1);
-                            }
-                        }
-                    }
+                boolean insideLoop = !loopEntryDepths.isEmpty();
 
+                if (insideLoop) {
                     if (!reportedNPlus1 && DB_CALL_PATTERN.matcher(content).find()) {
                         reportedNPlus1 = true;
                         int w = 28;
@@ -190,7 +189,8 @@ public class PerformanceRegressionAnalyzer {
                             "perf-linear-loop:" + path + ":" + line.lineNumber()
                         ));
                     }
-                } else if (SYNC_EXTERNAL_CALL.matcher(content).find() && fv.touchesCriticalRequestPath()) {
+                } else if (!reportedSyncPath && SYNC_EXTERNAL_CALL.matcher(content).find() && fv.touchesCriticalRequestPath()) {
+                    reportedSyncPath = true;
                     int w = 12;
                     score += w;
                     fileScore += w;
@@ -208,7 +208,26 @@ public class PerformanceRegressionAnalyzer {
                     ));
                 }
 
-                if (EXPENSIVE_QUERY_PATTERN.matcher(content).find()) {
+                // Update lexical brace depth and pop any loops whose blocks just closed (or single-line loops without braces)
+                boolean sawBraceOnLine = false;
+                for (char ch : content.toCharArray()) {
+                    if (ch == '{') {
+                        braceDepth++;
+                        sawBraceOnLine = true;
+                    } else if (ch == '}') {
+                        braceDepth = Math.max(0, braceDepth - 1);
+                        sawBraceOnLine = true;
+                        while (!loopEntryDepths.isEmpty() && braceDepth <= loopEntryDepths.peek()) {
+                            loopEntryDepths.pop();
+                        }
+                    }
+                }
+                if (opensLoop && !sawBraceOnLine && trimmed.endsWith(";")) {
+                    loopEntryDepths.pop();
+                }
+
+                if (!reportedExpensiveQuery && EXPENSIVE_QUERY_PATTERN.matcher(content).find()) {
+                    reportedExpensiveQuery = true;
                     int w = 20;
                     score += w;
                     fileScore += w;
@@ -225,7 +244,8 @@ public class PerformanceRegressionAnalyzer {
                     ));
                 }
 
-                if (MEMORY_HEAVY_PATTERN.matcher(content).find()) {
+                if (!reportedMemoryHeavy && MEMORY_HEAVY_PATTERN.matcher(content).find()) {
+                    reportedMemoryHeavy = true;
                     int w = 16;
                     score += w;
                     fileScore += w;
@@ -243,7 +263,8 @@ public class PerformanceRegressionAnalyzer {
                     ));
                 }
 
-                if (CACHE_EVICT_ALL.matcher(content).find()) {
+                if (!reportedCacheEvict && CACHE_EVICT_ALL.matcher(content).find()) {
+                    reportedCacheEvict = true;
                     int w = 16;
                     score += w;
                     fileScore += w;

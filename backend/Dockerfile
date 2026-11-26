@@ -12,5 +12,5 @@ RUN addgroup -S forge && adduser -S forge -G forge
 COPY --from=build /app/target/forge-platform-1.0.0.jar app.jar
 USER forge
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -qO- http://localhost:8080/actuator/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -qO- http://127.0.0.1:8080/actuator/health/readiness || exit 1
 ENTRYPOINT ["java", "-XX:+UseZGC", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]

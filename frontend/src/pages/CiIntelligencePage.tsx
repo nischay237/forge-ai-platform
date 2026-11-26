@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Activity, AlertTriangle, CheckCircle2, Plus, Terminal, X } from 'lucide-react';
 import { api } from '../lib/api';
+import { useForgeStore } from '../lib/store';
 import { Badge, Button, EmptyState, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
 import { formatRelativeTime, statusClasses } from '../lib/utils';
 
@@ -20,6 +21,8 @@ export function CiIntelligencePage() {
   const [branch, setBranch] = useState('feat/batch-export-streaming');
   const [rawLog, setRawLog] = useState(SAMPLE_CI_LOG);
 
+  const user = useForgeStore((s) => s.user);
+  const isViewer = user?.role === 'VIEWER';
   const qc = useQueryClient();
   const repos = useQuery({ queryKey: ['repos'], queryFn: api.listRepos });
   const builds = useQuery({ queryKey: ['ci'], queryFn: () => api.listCiBuilds() });
@@ -57,10 +60,12 @@ export function CiIntelligencePage() {
         accentWord="intelligence."
         description="Inspect CI build logs, classify root causes (test regressions, Flyway schema drift, OOM/SIGKILL, compiler breaks, security gates), and generate remediation playbooks."
         actions={
-          <Button onClick={() => setOpen(true)}>
-            <Plus className="w-3.5 h-3.5" />
-            Diagnose CI Log
-          </Button>
+          !isViewer ? (
+            <Button onClick={() => setOpen(true)}>
+              <Plus className="w-3.5 h-3.5" />
+              Diagnose CI Log
+            </Button>
+          ) : undefined
         }
       />
 
@@ -78,7 +83,7 @@ export function CiIntelligencePage() {
           icon={Activity}
           title="No CI pipeline runs recorded"
           description="Submit a failed or passing CI log to test automated root-cause classification."
-          action={<Button onClick={() => setOpen(true)}>Diagnose first CI log</Button>}
+          action={!isViewer ? <Button onClick={() => setOpen(true)}>Diagnose first CI log</Button> : undefined}
         />
       ) : (
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">

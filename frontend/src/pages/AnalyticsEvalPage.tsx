@@ -13,11 +13,14 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '../lib/api';
+import { useForgeStore } from '../lib/store';
 import { Badge, Button, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
 import { formatRelativeTime, statusClasses } from '../lib/utils';
 
 export function AnalyticsEvalPage() {
   const [selectedRunId, setSelectedRunId] = useState<string>('');
+  const user = useForgeStore((s) => s.user);
+  const isViewer = user?.role === 'VIEWER';
   const qc = useQueryClient();
   const overview = useQuery({ queryKey: ['overview'], queryFn: api.getOverview });
   const evals = useQuery({ queryKey: ['evaluations'], queryFn: api.listEvaluations });
@@ -44,10 +47,12 @@ export function AnalyticsEvalPage() {
         accentWord="evaluation."
         description="Live workspace metrics queried from persisted records. Run the 12-case deterministic evaluation benchmark covering SAST, secrets, entropy, IaC, API compatibility, SQL migrations, and negative controls."
         actions={
-          <Button onClick={() => runEvalMutation.mutate()} disabled={runEvalMutation.isPending}>
-            <Play className="w-3.5 h-3.5" />
-            {runEvalMutation.isPending ? 'Running 12-Case Suite...' : 'Run Evaluation Benchmark'}
-          </Button>
+          !isViewer ? (
+            <Button onClick={() => runEvalMutation.mutate()} disabled={runEvalMutation.isPending}>
+              <Play className="w-3.5 h-3.5" />
+              {runEvalMutation.isPending ? 'Running 12-Case Suite...' : 'Run Evaluation Benchmark'}
+            </Button>
+          ) : undefined
         }
       />
 
@@ -73,67 +78,73 @@ export function AnalyticsEvalPage() {
           </div>
           <div className="h-[240px]">
             {data ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={data.reviewLatencySeries}>
-                  <defs>
-                    <linearGradient id="riskFillLight" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#111111" stopOpacity={0.14} />
-                      <stop offset="95%" stopColor="#111111" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#EAEAE4" vertical={false} />
-                  <XAxis
-                    dataKey="prLabel"
-                    tick={{ fill: '#78716C', fontSize: 11, fontFamily: 'JetBrains Mono' }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    yAxisId="risk"
-                    domain={[0, 100]}
-                    tick={{ fill: '#111111', fontSize: 11, fontFamily: 'JetBrains Mono' }}
-                    axisLine={false}
-                    tickLine={false}
-                    width={32}
-                  />
-                  <YAxis
-                    yAxisId="latency"
-                    orientation="right"
-                    tick={{ fill: '#059669', fontSize: 11, fontFamily: 'JetBrains Mono' }}
-                    axisLine={false}
-                    tickLine={false}
-                    width={44}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#FFFFFF',
-                      border: '1px solid #E5E5E0',
-                      borderRadius: 8,
-                      fontSize: 12,
-                      color: '#111111',
-                      boxShadow: '0 4px 12px rgba(0,0,0,0.06)',
-                    }}
-                  />
-                  <Area
-                    yAxisId="risk"
-                    type="monotone"
-                    dataKey="riskScore"
-                    name="Risk Score (/100)"
-                    stroke="#111111"
-                    fill="url(#riskFillLight)"
-                    strokeWidth={2}
-                  />
-                  <Area
-                    yAxisId="latency"
-                    type="monotone"
-                    dataKey="processingMs"
-                    name="Latency (ms)"
-                    stroke="#059669"
-                    fill="none"
-                    strokeWidth={1.8}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
+              data.reviewLatencySeries.length === 0 ? (
+                <div className="h-full flex items-center justify-center rounded-lg border border-dashed border-[#E5E5E0] text-xs text-stone-500 text-center px-4">
+                  No completed pull request reviews recorded yet. Run a PR review to plot risk and latency trends.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={data.reviewLatencySeries}>
+                    <defs>
+                      <linearGradient id="riskFillLight" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#111111" stopOpacity={0.14} />
+                        <stop offset="95%" stopColor="#111111" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#EAEAE4" vertical={false} />
+                    <XAxis
+                      dataKey="prLabel"
+                      tick={{ fill: '#78716C', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      yAxisId="risk"
+                      domain={[0, 100]}
+                      tick={{ fill: '#111111', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={32}
+                    />
+                    <YAxis
+                      yAxisId="latency"
+                      orientation="right"
+                      tick={{ fill: '#059669', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={44}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: '#FFFFFF',
+                        border: '1px solid #E5E5E0',
+                        borderRadius: 8,
+                        fontSize: 12,
+                        color: '#111111',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.06)',
+                      }}
+                    />
+                    <Area
+                      yAxisId="risk"
+                      type="monotone"
+                      dataKey="riskScore"
+                      name="Risk Score (/100)"
+                      stroke="#111111"
+                      fill="url(#riskFillLight)"
+                      strokeWidth={2}
+                    />
+                    <Area
+                      yAxisId="latency"
+                      type="monotone"
+                      dataKey="processingMs"
+                      name="Latency (ms)"
+                      stroke="#059669"
+                      fill="none"
+                      strokeWidth={1.8}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              )
             ) : (
               <SkeletonBlock className="h-full" />
             )}
@@ -159,35 +170,41 @@ export function AnalyticsEvalPage() {
           </div>
           <div className="h-[240px]">
             {data ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={data.findingsByCategory}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#EAEAE4" vertical={false} />
-                  <XAxis
-                    dataKey="category"
-                    tick={{ fill: '#78716C', fontSize: 10, fontFamily: 'JetBrains Mono' }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    allowDecimals={false}
-                    tick={{ fill: '#78716C', fontSize: 11, fontFamily: 'JetBrains Mono' }}
-                    axisLine={false}
-                    tickLine={false}
-                    width={28}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#FFFFFF',
-                      border: '1px solid #E5E5E0',
-                      borderRadius: 8,
-                      fontSize: 12,
-                      color: '#111111',
-                      boxShadow: '0 4px 12px rgba(0,0,0,0.06)',
-                    }}
-                  />
-                  <Bar dataKey="count" name="Findings" fill="#111111" radius={[3, 3, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              data.findingsByCategory.length === 0 ? (
+                <div className="h-full flex items-center justify-center rounded-lg border border-dashed border-[#E5E5E0] text-xs text-stone-500 text-center px-4">
+                  No review findings recorded across categories yet.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={data.findingsByCategory}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#EAEAE4" vertical={false} />
+                    <XAxis
+                      dataKey="category"
+                      tick={{ fill: '#78716C', fontSize: 10, fontFamily: 'JetBrains Mono' }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      allowDecimals={false}
+                      tick={{ fill: '#78716C', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={28}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: '#FFFFFF',
+                        border: '1px solid #E5E5E0',
+                        borderRadius: 8,
+                        fontSize: 12,
+                        color: '#111111',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.06)',
+                      }}
+                    />
+                    <Bar dataKey="count" name="Findings" fill="#111111" radius={[3, 3, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )
             ) : (
               <SkeletonBlock className="h-full" />
             )}

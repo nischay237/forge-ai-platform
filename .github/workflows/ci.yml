@@ -95,3 +95,15 @@ jobs:
           name: frontend-vitest-report
           path: frontend/test-results/vitest-junit.xml
           if-no-files-found: warn
+
+  docker-build-verify:
+    name: Docker Container Images (Frontend, Backend & Unified Render)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build frontend Nginx production image
+        run: docker build -t forge-frontend:ci ./frontend
+      - name: Build backend Spring Boot production image
+        run: docker build -t forge-backend:ci ./backend
+      - name: Build unified single-container production image
+        run: docker build -t forge-unified:ci -f Dockerfile .

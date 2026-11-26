@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { useForgeStore } from '../lib/store';
 import type { RepositoryDto } from '../lib/types';
 import { LiveProcessingPanel } from '../components/LiveProcessingPanel';
 import { Badge, Button, EmptyState, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
@@ -47,6 +48,9 @@ export function RepositoriesPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [form, setForm] = useState<ConnectForm>(DEFAULT_CONNECT_FORM);
   const [formErrors, setFormErrors] = useState<{ owner?: string; name?: string }>({});
+  const user = useForgeStore((s) => s.user);
+  const isViewer = user?.role === 'VIEWER';
+  const canDeleteRepo = !user || user.role === 'OWNER' || user.role === 'ADMIN';
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -148,10 +152,12 @@ export function RepositoriesPage() {
         accentWord="repositories."
         description="Connect GitHub repositories for per-tenant HMAC-signed pull request webhooks, Java/TypeScript AST indexing, dependency graph extraction, and SCA/security scanning."
         actions={
-          <Button onClick={() => setOpen(true)}>
-            <Plus className="w-3.5 h-3.5" />
-            Connect Repository
-          </Button>
+          !isViewer ? (
+            <Button onClick={() => setOpen(true)}>
+              <Plus className="w-3.5 h-3.5" />
+              Connect Repository
+            </Button>
+          ) : undefined
         }
       />
 
@@ -193,7 +199,7 @@ export function RepositoriesPage() {
           icon={FolderGit2}
           title="No repositories connected yet"
           description="Connect a GitHub repository or provision a starter codebase to unlock AST dependency graphs, Change Risk analysis, and SBOM/SARIF scans."
-          action={<Button onClick={() => setOpen(true)}>Connect first repository</Button>}
+          action={!isViewer ? <Button onClick={() => setOpen(true)}>Connect first repository</Button> : undefined}
         />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -260,26 +266,30 @@ export function RepositoriesPage() {
                       <Network className="w-3.5 h-3.5" />
                       AST Graph
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => reindexMutation.mutate(repo.id)}
-                      disabled={reindexMutation.isPending}
-                      title="Re-run AST indexing"
-                      aria-label={`Re-index ${repo.fullName}`}
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => scanMutation.mutate(repo.id)}
-                      disabled={scanMutation.isPending}
-                      title="Run Secret, SAST, IaC & SCA scan"
-                      aria-label={`Scan ${repo.fullName}`}
-                    >
-                      <Shield className="w-3.5 h-3.5" />
-                    </Button>
+                    {!isViewer && (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => reindexMutation.mutate(repo.id)}
+                          disabled={reindexMutation.isPending}
+                          title="Re-run AST indexing"
+                          aria-label={`Re-index ${repo.fullName}`}
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => scanMutation.mutate(repo.id)}
+                          disabled={scanMutation.isPending}
+                          title="Run Secret, SAST, IaC & SCA scan"
+                          aria-label={`Scan ${repo.fullName}`}
+                        >
+                          <Shield className="w-3.5 h-3.5" />
+                        </Button>
+                      </>
+                    )}
                     {safeGhUrl && (
                       <a
                         href={safeGhUrl}
@@ -292,16 +302,18 @@ export function RepositoriesPage() {
                         <ExternalLink className="w-3.5 h-3.5" />
                       </a>
                     )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setPendingDelete(repo)}
-                      title="Disconnect repository"
-                      aria-label={`Disconnect ${repo.fullName}`}
-                      className="text-stone-400 hover:text-red-700"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
+                    {canDeleteRepo && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setPendingDelete(repo)}
+                        title="Disconnect repository"
+                        aria-label={`Disconnect ${repo.fullName}`}
+                        className="text-stone-400 hover:text-red-700"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               </Panel>

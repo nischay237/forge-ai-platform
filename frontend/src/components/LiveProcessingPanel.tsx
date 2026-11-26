@@ -58,12 +58,19 @@ const PIPELINE_STAGE_CATALOG: Record<string, StageSpec[]> = {
     { code: 'BUILDING_DEPENDENCY_GRAPH', label: 'Resolving dependency edges & cycles', icon: Network },
     { code: 'COMPLETED', label: 'AST index & dependency graph ready', icon: CheckCircle2 },
   ],
+  PREDICTION_EVALUATION: [
+    { code: 'LOADING_PREDICTION_HISTORY', label: 'Loading historical pre-outcome prediction runs', icon: Clock },
+    { code: 'LOADING_CONFIRMED_OUTCOMES', label: 'Loading confirmed defects, tests, deploys & incidents', icon: Layers },
+    { code: 'EVALUATING_HELD_OUT_SPLITS', label: 'Evaluating chronological held-out confusion matrices', icon: Scale },
+    { code: 'EVALUATION_COMPLETED', label: 'Held-out evaluation complete', icon: CheckCircle2 },
+  ],
 };
 
 const EVENT_TYPE_TITLES: Record<string, string> = {
   PR_REVIEW: 'Pull Request Review Pipeline',
   PR_PREDICTION: 'Predictive Risk Engine',
   REPO_INDEX: 'Repository AST & Dependency Indexer',
+  PREDICTION_EVALUATION: 'Held-Out Model Evaluation',
 };
 
 function formatElapsed(ms: number): string {
@@ -471,7 +478,7 @@ export function LiveProcessingPanel({
                       </p>
                     )}
 
-                    {detailEntries.length > 0 && (showDiagnostics || stage.state === 'active' || stage.state === 'failed' || stage.code === 'COMPLETED' || stage.code === 'PREDICTION_COMPLETED') && (
+                    {detailEntries.length > 0 && (showDiagnostics || stage.state === 'active' || stage.state === 'failed' || stage.code === 'COMPLETED' || stage.code === 'PREDICTION_COMPLETED' || stage.code === 'EVALUATION_COMPLETED') && (
                       <div className="flex flex-wrap gap-1.5 mt-2">
                         {detailEntries.map(([k, v]) => (
                           <span

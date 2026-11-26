@@ -24,5 +24,5 @@ COPY --from=backend-build /backend/target/forge-platform-1.0.0.jar app.jar
 RUN mkdir -p /app/data && chown -R forge:forge /app
 USER forge
 EXPOSE 10000
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -qO- http://localhost:${PORT:-10000}/actuator/health || exit 1
-ENTRYPOINT ["sh", "-c", "java -XX:+UseG1GC -XX:MaxRAMPercentage=72.0 -jar app.jar"]
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD wget -qO- http://127.0.0.1:${PORT:-10000}/actuator/health/readiness || exit 1
+ENTRYPOINT ["sh", "-c", "exec java -XX:+UseG1GC -XX:MaxRAMPercentage=72.0 -jar app.jar"]

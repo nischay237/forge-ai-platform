@@ -9,11 +9,13 @@ import {
   GitPullRequest,
   Globe,
   Plus,
+  Search,
   X,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { useForgeStore } from '../lib/store';
 import { LiveProcessingPanel } from '../components/LiveProcessingPanel';
-import { Badge, Button, EmptyState, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
+import { Badge, Button, EmptyState, ErrorBanner, PageHeader, PaginationBar, Panel, SkeletonBlock } from '../components/ui';
 import { formatRelativeTime, mergeDecisionClasses, severityClasses, statusClasses } from '../lib/utils';
 
 const SAMPLE_DIFF_PRESET = `diff --git a/src/main/java/com/acme/ledger/SettlementService.java b/src/main/java/com/acme/ledger/SettlementService.java
@@ -46,12 +48,33 @@ export function ReviewsPage() {
   const [title, setTitle] = useState('feat(payouts): add real-time ledger reconciliation worker');
   const [sourceBranch, setSourceBranch] = useState('feat/ledger-reconciliation');
   const [rawDiff, setRawDiff] = useState(SAMPLE_DIFF_PRESET);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [page, setPage] = useState(1);
 
+  const user = useForgeStore((s) => s.user);
+  const isViewer = user?.role === 'VIEWER';
   const navigate = useNavigate();
   const qc = useQueryClient();
 
   const repos = useQuery({ queryKey: ['repos'], queryFn: api.listRepos });
   const reviews = useQuery({ queryKey: ['reviews'], queryFn: () => api.listReviews() });
+
+  const PAGE_SIZE = 10;
+  const filteredReviews = (reviews.data ?? []).filter((r) => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      r.title.toLowerCase().includes(q) ||
+      r.repositoryName.toLowerCase().includes(q) ||
+      r.sourceBranch.toLowerCase().includes(q) ||
+      r.author.toLowerCase().includes(q) ||
+      String(r.prNumber).includes(q) ||
+      (r.mergeDecision || '').toLowerCase().includes(q)
+    );
+  });
+  const totalPages = Math.max(1, Math.ceil(filteredReviews.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pagedReviews = filteredReviews.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   useEffect(() => {
     if (searchParams.get('new') === '1') {
@@ -96,16 +119,18 @@ export function ReviewsPage() {
         accentWord="reviews."
         description="Import a real GitHub Pull Request or submit a unified diff. FORGE computes AST blast radius, API/migration compatibility, security risks, recommended tests, and an explainable PASS/WARN/BLOCK verdict."
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Button onClick={() => setGithubOpen(true)}>
-              <Globe className="w-3.5 h-3.5" />
-              Import Real GitHub PR
-            </Button>
-            <Button variant="secondary" onClick={() => setOpen(true)}>
-              <Plus className="w-3.5 h-3.5" />
-              Analyze Custom Diff
-            </Button>
-          </div>
+          !isViewer ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button onClick={() => setGithubOpen(true)}>
+                <Globe className="w-3.5 h-3.5" />
+                Import Real GitHub PR
+              </Button>
+              <Button variant="secondary" onClick={() => setOpen(true)}>
+                <Plus className="w-3.5 h-3.5" />
+                Analyze Custom Diff
+              </Button>
+            </div>
+          ) : undefined
         }
       />
 
@@ -132,88 +157,125 @@ export function ReviewsPage() {
           icon={GitPullRequest}
           title="No pull request reviews yet"
           description="Import a GitHub PR or submit a diff to inspect explainable risk factors, recommended tests, and Monaco side-by-side diffs."
-          action={<Button onClick={() => setOpen(true)}>Analyze Pull Request</Button>}
+          action={!isViewer ? <Button onClick={() => setOpen(true)}>Analyze Pull Request</Button> : undefined}
         />
       ) : (
-        <Panel className="overflow-hidden divide-y divide-[#EFEFEA]">
-          {(reviews.data ?? []).map((r) => (
-            <Link
-              key={r.id}
-              to={`/reviews/${r.id}`}
-              className="block p-5 hover:bg-[#FAFAF8] transition-colors"
-            >
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                <div className="min-w-0 space-y-1.5">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-xs font-semibold text-[#111111]">
-                      #{r.prNumber}
-                    </span>
-                    <h3 className="text-sm font-semibold text-[#111111]">{r.title}</h3>
-                    {r.mergeDecision && (
-                      <Badge className={mergeDecisionClasses(r.mergeDecision)}>{r.mergeDecision}</Badge>
-                    )}
-                    <Badge className={statusClasses(r.status)}>{r.status}</Badge>
-                    {r.publishStatus === 'PUBLISHED_TO_GITHUB' ? (
-                      <Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">
-                        <CheckCircle2 className="w-3 h-3" /> Published to GitHub
-                      </Badge>
-                    ) : r.publishedToGithub ? (
-                      <Badge className="bg-stone-100 text-stone-700 border-stone-200">
-                        <CheckCircle2 className="w-3 h-3" /> Approved Locally
-                      </Badge>
-                    ) : null}
-                  </div>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-mono text-stone-500">
+              {filteredReviews.length} of {(reviews.data ?? []).length} pull request review(s)
+            </span>
+            <div className="flex items-center gap-2 h-9 px-3 rounded-md bg-white border border-[#DCDCD5] focus-within:border-[#111111]">
+              <Search className="w-3.5 h-3.5 text-stone-400" />
+              <input
+                aria-label="Search pull request reviews"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setPage(1);
+                }}
+                placeholder="Search PR #, title, repo, branch, verdict..."
+                className="bg-transparent text-xs text-[#111111] placeholder:text-stone-400 focus:outline-none w-56"
+              />
+            </div>
+          </div>
 
-                  <p className="text-xs text-stone-600 line-clamp-1">{r.summary}</p>
+          {filteredReviews.length === 0 ? (
+            <EmptyState
+              icon={GitPullRequest}
+              title="No matching pull request reviews"
+              description="Try clearing or adjusting your search query."
+            />
+          ) : (
+            <>
+              <Panel className="overflow-hidden divide-y divide-[#EFEFEA]">
+                {pagedReviews.map((r) => (
+                  <Link
+                    key={r.id}
+                    to={`/reviews/${r.id}`}
+                    className="block p-5 hover:bg-[#FAFAF8] transition-colors"
+                  >
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                      <div className="min-w-0 space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-xs font-semibold text-[#111111]">
+                            #{r.prNumber}
+                          </span>
+                          <h3 className="text-sm font-semibold text-[#111111]">{r.title}</h3>
+                          {r.mergeDecision && (
+                            <Badge className={mergeDecisionClasses(r.mergeDecision)}>{r.mergeDecision}</Badge>
+                          )}
+                          <Badge className={statusClasses(r.status)}>{r.status}</Badge>
+                          {r.publishStatus === 'PUBLISHED_TO_GITHUB' ? (
+                            <Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">
+                              <CheckCircle2 className="w-3 h-3" /> Published to GitHub
+                            </Badge>
+                          ) : r.publishedToGithub ? (
+                            <Badge className="bg-stone-100 text-stone-700 border-stone-200">
+                              <CheckCircle2 className="w-3 h-3" /> Approved Locally
+                            </Badge>
+                          ) : null}
+                        </div>
 
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono text-stone-500">
-                    <span>{r.repositoryName}</span>
-                    <span className="flex items-center gap-1">
-                      <GitBranch className="w-3 h-3" /> {r.sourceBranch} → {r.targetBranch}
-                    </span>
-                    <span>{r.author}</span>
-                    <span>
-                      {r.modelUsed} ({r.promptVersion})
-                    </span>
-                    <span>{r.processingMs}ms</span>
-                    <span>{formatRelativeTime(r.createdAt)}</span>
-                  </div>
-                </div>
+                        <p className="text-xs text-stone-600 line-clamp-1">{r.summary}</p>
 
-                <div className="flex items-center gap-3 shrink-0">
-                  <div className="flex items-center gap-1.5">
-                    {r.criticalCount > 0 && (
-                      <Badge className={severityClasses('CRITICAL')}>{r.criticalCount} critical</Badge>
-                    )}
-                    {r.highCount > 0 && (
-                      <Badge className={severityClasses('HIGH')}>{r.highCount} high</Badge>
-                    )}
-                    <Badge className="bg-stone-100 text-stone-700 border-stone-200">
-                      {r.findingCount} findings
-                    </Badge>
-                  </div>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono text-stone-500">
+                          <span>{r.repositoryName}</span>
+                          <span className="flex items-center gap-1">
+                            <GitBranch className="w-3 h-3" /> {r.sourceBranch} → {r.targetBranch}
+                          </span>
+                          <span>{r.author}</span>
+                          <span>
+                            {r.modelUsed} ({r.promptVersion})
+                          </span>
+                          <span>{r.processingMs}ms</span>
+                          <span>{formatRelativeTime(r.createdAt)}</span>
+                        </div>
+                      </div>
 
-                  <div className="pl-3 border-l border-[#EAEAE4] text-right">
-                    <div className="text-[10px] font-mono uppercase text-stone-500">Risk</div>
-                    <div
-                      className={`text-sm font-mono font-semibold tabular-nums ${
-                        r.riskScore >= 65
-                          ? 'text-red-700'
-                          : r.riskScore > 25
-                          ? 'text-amber-700'
-                          : 'text-emerald-700'
-                      }`}
-                    >
-                      {r.riskScore}/100
+                      <div className="flex items-center gap-3 shrink-0">
+                        <div className="flex items-center gap-1.5">
+                          {r.criticalCount > 0 && (
+                            <Badge className={severityClasses('CRITICAL')}>{r.criticalCount} critical</Badge>
+                          )}
+                          {r.highCount > 0 && (
+                            <Badge className={severityClasses('HIGH')}>{r.highCount} high</Badge>
+                          )}
+                          <Badge className="bg-stone-100 text-stone-700 border-stone-200">
+                            {r.findingCount} findings
+                          </Badge>
+                        </div>
+
+                        <div className="pl-3 border-l border-[#EAEAE4] text-right">
+                          <div className="text-[10px] font-mono uppercase text-stone-500">Risk</div>
+                          <div
+                            className={`text-sm font-mono font-semibold tabular-nums ${
+                              r.riskScore >= 65
+                                ? 'text-red-700'
+                                : r.riskScore > 25
+                                ? 'text-amber-700'
+                                : 'text-emerald-700'
+                            }`}
+                          >
+                            {r.riskScore}/100
+                          </div>
+                        </div>
+
+                        <ArrowRight className="w-4 h-4 text-stone-400" />
+                      </div>
                     </div>
-                  </div>
-
-                  <ArrowRight className="w-4 h-4 text-stone-400" />
-                </div>
-              </div>
-            </Link>
-          ))}
-        </Panel>
+                  </Link>
+                ))}
+              </Panel>
+              <PaginationBar
+                page={currentPage}
+                pageSize={PAGE_SIZE}
+                totalItems={filteredReviews.length}
+                onPageChange={setPage}
+              />
+            </>
+          )}
+        </div>
       )}
 
       {/* Import Real GitHub PR Dialog */}

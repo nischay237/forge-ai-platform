@@ -32,6 +32,7 @@ export function SettingsPage() {
   const [minTestsHighImpact, setMinTestsHighImpact] = useState(true);
   const [passMax, setPassMax] = useState(25);
   const [warnMax, setWarnMax] = useState(65);
+  const [policyValidationError, setPolicyValidationError] = useState<string | null>(null);
 
   useEffect(() => {
     if (settings.data?.tenant) {
@@ -172,6 +173,7 @@ export function SettingsPage() {
           message={policyMutation.error instanceof Error ? policyMutation.error.message : 'Failed to update policy'}
         />
       )}
+      {policyValidationError && <ErrorBanner message={policyValidationError} />}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
         <div className="xl:col-span-2 space-y-5">
@@ -420,7 +422,14 @@ export function SettingsPage() {
               <Button
                 type="button"
                 disabled={policyMutation.isPending}
-                onClick={() =>
+                onClick={() => {
+                  if (Number.isNaN(passMax) || Number.isNaN(warnMax) || passMax < 0 || warnMax > 100 || passMax >= warnMax) {
+                    setPolicyValidationError(
+                      'Max Score for PASS must be strictly less than Max Score for WARN (valid range 0–100).'
+                    );
+                    return;
+                  }
+                  setPolicyValidationError(null);
                   policyMutation.mutate({
                     blockOnCriticalSecurity: blockCritSec,
                     blockOnBreakingApi: blockBreakingApi,
@@ -429,8 +438,8 @@ export function SettingsPage() {
                     minTestsForHighImpact: minTestsHighImpact,
                     maxRiskScoreForPass: passMax,
                     maxRiskScoreForWarn: warnMax,
-                  })
-                }
+                  });
+                }}
               >
                 <Save className="w-3.5 h-3.5" />
                 {policyMutation.isPending ? 'Publishing Policy...' : 'Publish Risk Policy'}
@@ -490,14 +499,18 @@ export function SettingsPage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-stone-500">OpenAPI Docs</span>
-                <a
-                  href="/swagger-ui.html"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[#111111] underline underline-offset-2 hover:text-stone-600"
-                >
-                  /swagger-ui.html
-                </a>
+                {(data?.activeProfile ?? '').toLowerCase().includes('prod') ? (
+                  <span className="text-stone-500">Disabled in prod</span>
+                ) : (
+                  <a
+                    href="/swagger-ui.html"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[#111111] underline underline-offset-2 hover:text-stone-600"
+                  >
+                    /swagger-ui.html
+                  </a>
+                )}
               </div>
             </div>
           </Panel>
