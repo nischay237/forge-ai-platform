@@ -177,7 +177,7 @@ public class AuthService {
         }
 
         String presentedHash = cryptoService.sha256Hex(request.refreshToken().trim());
-        RefreshTokenEntity existing = refreshTokenRepository.findByTokenHash(presentedHash)
+        RefreshTokenEntity existing = refreshTokenRepository.findByTokenHashForUpdate(presentedHash)
             .orElseThrow(() -> new ForgeException(HttpStatus.UNAUTHORIZED, "INVALID_REFRESH_TOKEN", "Invalid or expired refresh token"));
 
         if (existing.isRevoked()) {
@@ -209,8 +209,16 @@ public class AuthService {
 
         String nextRawRefresh = "frt_" + cryptoService.generateSecureToken(40);
         String nextHash = cryptoService.sha256Hex(nextRawRefresh);
-        existing.revoke(nextHash);
-        refreshTokenRepository.save(existing);
+        // Atomic compare-and-revoke defense-in-depth on top of PESSIMISTIC_WRITE row lock
+        int updated = refreshTokenRepository.revokeIfActive(existing.getId(), Instant.now(), nextHash);
+        if (updated == 0) {
+            authLockoutService.revokeRefreshFamily(existing.getFamilyId());
+            auditService.recordIsolated(existing.getTenantId(), "security@forge.dev", "SYSTEM",
+                "REFRESH_TOKEN_REUSE_DETECTED", "USER", existing.getUserId(),
+                "Concurrent refresh token rotation race detected; revoked token family " + existing.getFamilyId(), safeIp);
+            throw new ForgeException(HttpStatus.UNAUTHORIZED, "REFRESH_TOKEN_REUSE_DETECTED",
+                "Session invalidated due to concurrent refresh token reuse. Please sign in again.");
+        }
 
         RefreshTokenEntity rotated = RefreshTokenEntity.issue(
             tenant.getId(),

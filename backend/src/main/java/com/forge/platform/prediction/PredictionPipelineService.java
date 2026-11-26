@@ -75,6 +75,7 @@ public class PredictionPipelineService implements DomainEventHandler {
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
     private final Counter predictionsCompletedCounter;
+    private final Counter predictionsFailedCounter;
     private final Timer predictionDurationTimer;
 
     public PredictionPipelineService(
@@ -129,6 +130,7 @@ public class PredictionPipelineService implements DomainEventHandler {
         this.objectMapper = objectMapper;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.predictionsCompletedCounter = Counter.builder("forge.predictions.completed").register(meterRegistry);
+        this.predictionsFailedCounter = Counter.builder("forge.predictions.failed").register(meterRegistry);
         this.predictionDurationTimer = Timer.builder("forge.predictions.duration").register(meterRegistry);
     }
 
@@ -144,13 +146,24 @@ public class PredictionPipelineService implements DomainEventHandler {
             log.info("Skipping duplicate PR prediction event {}", eventId);
             return;
         }
+        String reviewId = "";
         try {
             JsonNode node = objectMapper.readTree(payload);
-            String reviewId = node.path("reviewId").asText("");
-            transactionTemplate.executeWithoutResult(status -> computeAndPersist(tenantId, reviewId, true, false));
+            reviewId = node.path("reviewId").asText("");
+            final String targetReviewId = reviewId;
+            transactionTemplate.executeWithoutResult(status -> computeAndPersist(tenantId, targetReviewId, true, false));
             idempotencyService.markCompleted(claimKey);
         } catch (Exception ex) {
             idempotencyService.releaseClaim(claimKey);
+            predictionsFailedCounter.increment();
+            if (reviewId != null && !reviewId.isBlank()) {
+                sseHubService.publish(tenantId, PipelineEvent.stage(
+                    "PR_PREDICTION", reviewId, "FAILED",
+                    "Predictive analysis failed", "FAILED", 5, 5,
+                    "Predictive pipeline failed: " + ex.getMessage(),
+                    Map.of("error", ex.getMessage() != null ? ex.getMessage() : "unexpected error")
+                ));
+            }
             log.error("Async PR prediction worker failed for event {}: {}", eventId, ex.getMessage(), ex);
             throw new IllegalStateException("PR prediction pipeline failed for event " + eventId, ex);
         }
@@ -213,19 +226,49 @@ public class PredictionPipelineService implements DomainEventHandler {
 
         long startNanos = System.nanoTime();
         if (emitLiveProgress) {
-            sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_PREDICTION", reviewId, "PREDICTIVE_FEATURE_EXTRACTION", 35,
-                "Extracting PR diff, AST complexity, blast radius & historical engineering features"
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_PREDICTION", reviewId, "EXTRACTING_FEATURES",
+                "Extracting diff, AST & historical signals", "STARTED", 1, 5,
+                "Extracting PR diff, AST complexity, blast radius & historical engineering features for PR #" + review.getPrNumber(),
+                Map.of("prNumber", review.getPrNumber(), "repository", repo.getFullName())
             ));
         }
 
         PrFeatureExtractor.PrFeatureVector fv = featureExtractor.extract(tenantId, repo, review);
 
+        if (emitLiveProgress) {
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_PREDICTION", reviewId, "EVALUATING_DEFECT_AND_TEST_RISK",
+                "Evaluating bug & test failure risk", "IN_PROGRESS", 2, 5,
+                "Scoring file/module defect susceptibility & test failure risk across " + fv.totalHistoricalSampleSize() + " historical sample(s)",
+                Map.of("historicalSamples", fv.totalHistoricalSampleSize(), "changedFiles", fv.changedFilePaths().size())
+            ));
+        }
+
         PredictionCandidate.CategoryPredictionDraft bugDraft = bugRiskPredictor.predict(fv);
         TestFailurePredictor.TestFailurePredictionResult testResult = testFailurePredictor.predict(fv);
+
+        if (emitLiveProgress) {
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_PREDICTION", reviewId, "EVALUATING_OPERATIONAL_AND_PERF_RISK",
+                "Evaluating operational & static perf risk", "IN_PROGRESS", 3, 5,
+                "Evaluating production incident risk, deployment/rollback risk & static performance regression warnings",
+                Map.of("bugRiskScore", bugDraft.rawScore(), "predictedTests", testResult.predictedTests().size())
+            ));
+        }
+
         PredictionCandidate.CategoryPredictionDraft incidentDraft = operationalRiskPredictor.predictIncidentRisk(fv);
         PredictionCandidate.CategoryPredictionDraft changeFailureDraft = operationalRiskPredictor.predictChangeFailureRisk(fv);
         PredictionCandidate.CategoryPredictionDraft perfDraft = performanceRegressionAnalyzer.analyze(fv);
+
+        if (emitLiveProgress) {
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_PREDICTION", reviewId, "AGGREGATING_AND_PERSISTING",
+                "Deduplicating signal channels & persisting evidence", "IN_PROGRESS", 4, 5,
+                "Aggregating 7 separated engineering risk channels with evidence deduplication",
+                Map.of("incidentRisk", incidentDraft.riskLevel(), "changeFailureRisk", changeFailureDraft.riskLevel())
+            ));
+        }
 
         EngineeringRiskAggregator.AggregatedEngineeringRisk aggregated = riskAggregator.aggregate(
             fv, bugDraft, testResult.categoryDraft(), incidentDraft, changeFailureDraft, perfDraft
@@ -299,9 +342,17 @@ public class PredictionPipelineService implements DomainEventHandler {
             "prediction");
 
         if (emitLiveProgress) {
-            sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_PREDICTION", reviewId, "PREDICTION_COMPLETED", 100,
-                "Predictive baseline ready: " + aggregated.overallRiskLevel() + " (" + aggregated.overallScore() + "/100)"
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_PREDICTION", reviewId, "PREDICTION_COMPLETED",
+                "Predictive baseline ready", "COMPLETED", 5, 5,
+                "Predictive baseline ready: " + aggregated.overallRiskLevel() + " (" + aggregated.overallScore()
+                    + "/100, " + fv.totalHistoricalSampleSize() + " historical sample(s))",
+                Map.of(
+                    "predictionRunId", run.getId(),
+                    "overallScore", aggregated.overallScore(),
+                    "overallRiskLevel", aggregated.overallRiskLevel(),
+                    "historicalSamples", fv.totalHistoricalSampleSize()
+                )
             ));
         }
 

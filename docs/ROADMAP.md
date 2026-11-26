@@ -1,6 +1,6 @@
 # FORGE Engineering Roadmap & Capability Status
 
-## Delivered Capabilities (Verified on `upgrade/forge-enterprise-v2`)
+## Delivered Capabilities (Verified on `main`)
 
 | Phase | Scope | Verification Status |
 |---|---|---|
@@ -11,6 +11,7 @@
 | Phase 9 | Frontend blank default login, boot `/auth/me` validation, single-flight refresh retry, query cache & pipeline teardown on tenant switch, single-use SSE tickets, `React.lazy` code splitting, Change Risk & Recommended Tests UI, Architecture Drift tab, SARIF/SBOM downloads, Suppressions modal, Policy-as-Code editor, honest health status, Vitest suite | Implemented and tested |
 | Phase 10 | Hardened GitHub Actions CI (security hygiene gate + Postgres Testcontainers + frontend strict checks), production-safe `render.yaml`, reconciled docs & runbook | Implemented and tested |
 | Predictive Engine M1–M10 | Historical engineering data store (`V6` migration, 9 tenant-isolated tables + RLS), idempotent API & GitHub `workflow_run`/`deployment_status` webhook ingestion, `PrFeatureExtractor`, deterministic `BugRiskPredictor`, `TestFailurePredictor` (separated from actual CI results), `OperationalRiskPredictor` (separate Incident vs Deployment/Rollback), static `PerformanceRegressionAnalyzer`, 7-channel deduplicated `EngineeringRiskAggregator`, non-blocking async Outbox pipeline (`forge.pr-prediction.requested`), chronological held-out `PredictionEvaluationService`, `/api/v1/predictions/*` APIs, `/predictions` dashboard & `ReviewDetailPage` forecast card, unit/integration/RBAC/tenant-isolation/Vitest tests | Implemented and tested (Postgres V6 Testcontainers verified in Linux CI with Docker) |
+| Production Quality & Real-Time Upgrade | Zero localhost fallbacks in `application-prod.yml`, fail-fast prod infra/CORS validation, `PESSIMISTIC_WRITE` + atomic refresh-token concurrency safety, atomic multi-replica outbox claiming + dead-letter requeue + backlog/age gauges, Redis outage resilience (`consumeOnce` fail-closed), 1 MiB webhook guard, anti-leakage pre-outcome chronological evaluation & class-imbalance `null` ratios, dark-first real-time SSE `LiveProcessingPanel` with monotonic sequencing & page-refresh `/api/v1/stream/operations` recovery, `CorrelationIdFilter` + structured JSON prod logging + liveness/readiness probes, SHA-pinned CI actions & 0 HIGH/CRITICAL prod npm vulnerabilities | Implemented and tested |
 
 ## Planned / Future Enhancements (Not Yet Implemented)
 

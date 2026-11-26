@@ -1,5 +1,6 @@
 package com.forge.platform.identity;
 
+import com.forge.platform.common.CorrelationIdFilter;
 import com.forge.platform.common.TenantContext;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
@@ -8,6 +9,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -92,6 +94,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 jti
             );
             TenantContext.set(principal);
+            MDC.put(CorrelationIdFilter.MDC_TENANT_ID, user.getTenantId());
             var auth = new UsernamePasswordAuthenticationToken(
                 principal,
                 null,

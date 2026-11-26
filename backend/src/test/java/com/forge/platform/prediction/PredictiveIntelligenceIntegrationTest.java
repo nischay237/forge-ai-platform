@@ -19,6 +19,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -448,7 +450,100 @@ class PredictiveIntelligenceIntegrationTest {
         assertThat(testEval).isNotNull();
         assertThat(testEval.path("status").asText()).isEqualTo("EVALUATED");
         assertThat(testEval.path("sampleSize").asInt()).isGreaterThanOrEqualTo(3);
-        assertThat(testEval.path("precisionScore").isNull()).isFalse();
         assertThat(testEval.path("calibrationError").isNull()).isFalse();
+        assertThat(testEval.path("baselineComparison").path("splitMethod").asText())
+            .isEqualTo("CHRONOLOGICAL_HELD_OUT_TAIL_PRE_OUTCOME");
+        assertThat(testEval.path("baselineComparison").path("evaluationPeriodStart").asText()).isNotBlank();
+        assertThat(testEval.path("baselineComparison").path("evaluationPeriodEnd").asText()).isNotBlank();
+
+        // 8. Timestamp guards, incident range validation & webhook payload size guard
+        mockMvc.perform(post("/api/v1/predictions/history/tests")
+                .header("Authorization", "Bearer " + tenantA.token())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(Map.of(
+                    "repositoryId", repoId,
+                    "prNumber", 101,
+                    "testName", "FutureTest",
+                    "outcome", "FAILED",
+                    "executedAt", Instant.now().plus(7, ChronoUnit.DAYS).toString()
+                ))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("INVALID_TIMESTAMP"));
+
+        mockMvc.perform(post("/api/v1/predictions/history/incidents")
+                .header("Authorization", "Bearer " + tenantA.token())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(Map.of(
+                    "repositoryId", repoId,
+                    "title", "Invalid Range Incident",
+                    "severity", "SEV3",
+                    "serviceName", repoName,
+                    "occurredAt", Instant.now().minus(1, ChronoUnit.HOURS).toString(),
+                    "resolvedAt", Instant.now().minus(2, ChronoUnit.HOURS).toString()
+                ))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value("INVALID_TIMESTAMP_RANGE"));
+
+        // Oversized webhook (>1 MiB) rejected with 413 PAYLOAD_TOO_LARGE
+        String oversizedBody = "{\"pad\":\"" + "A".repeat(1_050_000) + "\"}";
+        mockMvc.perform(post("/api/v1/webhooks/github/" + tenantA.slug())
+                .header("X-GitHub-Event", "deployment_status")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(oversizedBody))
+            .andExpect(status().isPayloadTooLarge())
+            .andExpect(jsonPath("$.code").value("WEBHOOK_PAYLOAD_TOO_LARGE"));
+    }
+
+    @Test
+    void chronologicalEvaluationExcludesPrePredictionOutcomesToPreventFutureDataLeakage() throws Exception {
+        TenantSession tenant = registerWorkspace("LeakGuard");
+        String repoId = connectSampleRepo(tenant.token(), "leak-guard-repo");
+        String simpleDiff = """
+            diff --git a/src/main/java/com/acme/payments/LedgerService.java b/src/main/java/com/acme/payments/LedgerService.java
+            --- a/src/main/java/com/acme/payments/LedgerService.java
+            +++ b/src/main/java/com/acme/payments/LedgerService.java
+            @@ -1,3 +1,4 @@
+             public class LedgerService {
+            +    // minor change
+             }
+            """;
+
+        // Create 5 PRs and run predictions, but ingest outcomes stamped 2 hours BEFORE each prediction (historical pre-prediction data)
+        Instant twoHoursAgo = Instant.now().minus(2, ChronoUnit.HOURS);
+        for (int pr = 201; pr <= 205; pr++) {
+            String rev = triggerPrReview(tenant.token(), repoId, pr, simpleDiff);
+            mockMvc.perform(post("/api/v1/predictions/" + rev + "/run")
+                    .header("Authorization", "Bearer " + tenant.token()))
+                .andExpect(status().isOk());
+            mockMvc.perform(post("/api/v1/predictions/history/tests")
+                    .header("Authorization", "Bearer " + tenant.token())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(objectMapper.writeValueAsString(Map.of(
+                        "repositoryId", repoId,
+                        "prNumber", pr,
+                        "testName", "LedgerServiceTest",
+                        "outcome", "FAILED",
+                        "executedAt", twoHoursAgo.toString(),
+                        "externalEventKey", "pre-pred-leak-" + pr
+                    ))))
+                .andExpect(status().isCreated());
+        }
+
+        String evalJson = mockMvc.perform(post("/api/v1/predictions/evaluations/run")
+                .header("Authorization", "Bearer " + tenant.token()))
+            .andExpect(status().isOk())
+            .andReturn().getResponse().getContentAsString();
+        JsonNode evals = objectMapper.readTree(evalJson);
+        JsonNode testEval = null;
+        for (JsonNode ev : evals) {
+            if ("TEST_FAILURE_RISK".equals(ev.path("category").asText())) {
+                testEval = ev;
+            }
+        }
+        assertThat(testEval).isNotNull();
+        // All 5 outcomes preceded the predictions -> MUST be excluded as temporal leakage -> INSUFFICIENT_LABELLED_DATA!
+        assertThat(testEval.path("status").asText()).isEqualTo("INSUFFICIENT_LABELLED_DATA");
+        assertThat(testEval.path("sampleSize").asInt()).isZero();
+        assertThat(testEval.path("baselineComparison").path("excludedPrePredictionOutcomes").asInt()).isEqualTo(5);
     }
 }

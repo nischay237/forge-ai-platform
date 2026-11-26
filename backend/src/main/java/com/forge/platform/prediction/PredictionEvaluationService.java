@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -21,11 +22,15 @@ import java.util.Map;
 /**
  * Chronological Held-Out Prediction Evaluation Engine (Milestone 7 / Section 10).
  *
- * Evaluates stored historical predictions strictly against real confirmed post-merge outcomes
+ * Evaluates stored historical predictions strictly against real confirmed post-prediction outcomes
  * (defects, CI test failures, deployment failures/rollbacks, confirmed incidents).
  *
- * Truth boundary: NEVER invents or reports accuracy metrics unless sufficient real labelled
- * outcomes exist (MIN_TOTAL_MATCHED_SAMPLES = 5, evaluated on the chronological held-out split).
+ * Anti-leakage and truth boundaries:
+ * - Uses the EARLIEST (pre-outcome) prediction run per PR review so later recomputations cannot leak future outcomes.
+ * - Matches only outcomes observed at or after the prediction run's creation timestamp (1s clock-skew tolerance).
+ * - Reports null (undefined) instead of misleading 0.0 when class imbalance yields a zero denominator.
+ * - NEVER invents or reports accuracy metrics unless sufficient real labelled outcomes exist
+ *   (MIN_TOTAL_MATCHED_SAMPLES = 5, evaluated on the chronological held-out tail).
  */
 @Service
 public class PredictionEvaluationService {
@@ -93,13 +98,14 @@ public class PredictionEvaluationService {
             ? runRepository.findByTenantIdAndRepositoryIdOrderByCreatedAtDesc(tenantId, repositoryId)
             : runRepository.findByTenantIdOrderByCreatedAtDesc(tenantId);
 
-        // Deduplicate to latest prediction run per PR review, sorted chronologically ascending
-        Map<String, PredictionRunEntity> latestByReview = new LinkedHashMap<>();
-        for (PredictionRunEntity run : runs) {
-            latestByReview.putIfAbsent(run.getReviewId(), run);
+        // Deduplicate to EARLIEST (pre-outcome) prediction run per PR review to prevent temporal / future-data leakage
+        List<PredictionRunEntity> sortedAsc = new ArrayList<>(runs);
+        sortedAsc.sort(Comparator.comparing(PredictionRunEntity::getCreatedAt));
+        Map<String, PredictionRunEntity> earliestByReview = new LinkedHashMap<>();
+        for (PredictionRunEntity run : sortedAsc) {
+            earliestByReview.putIfAbsent(run.getReviewId(), run);
         }
-        List<PredictionRunEntity> chronologicalRuns = new ArrayList<>(latestByReview.values());
-        chronologicalRuns.sort(Comparator.comparing(PredictionRunEntity::getCreatedAt));
+        List<PredictionRunEntity> chronologicalRuns = new ArrayList<>(earliestByReview.values());
 
         List<String> runIds = chronologicalRuns.stream().map(PredictionRunEntity::getId).toList();
         Map<String, Map<String, PredictionItemEntity>> itemsByRunAndCategory = new LinkedHashMap<>();
@@ -119,32 +125,58 @@ public class PredictionEvaluationService {
         List<PredictionDtos.ModelEvaluationDto> results = new ArrayList<>();
         results.add(evaluateCategory(tenantId, repositoryId, BugRiskPredictor.CATEGORY, chronologicalRuns, itemsByRunAndCategory,
             run -> defects.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
-                && d.getIntroducedPrNumber() != null && d.getIntroducedPrNumber() == run.getPrNumber()),
-            run -> !defects.isEmpty()));
+                && d.getIntroducedPrNumber() != null && d.getIntroducedPrNumber() == run.getPrNumber()
+                && isPostPrediction(d.getReportedAt(), run.getCreatedAt())),
+            run -> defects.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
+                && isPostPrediction(d.getReportedAt(), run.getCreatedAt())),
+            run -> (int) defects.stream().filter(d -> d.getRepositoryId().equals(run.getRepositoryId())
+                && d.getIntroducedPrNumber() != null && d.getIntroducedPrNumber() == run.getPrNumber()
+                && !isPostPrediction(d.getReportedAt(), run.getCreatedAt())).count()));
 
         results.add(evaluateCategory(tenantId, repositoryId, TestFailurePredictor.CATEGORY, chronologicalRuns, itemsByRunAndCategory,
             run -> tests.stream().anyMatch(t -> t.getRepositoryId().equals(run.getRepositoryId())
                 && t.getPrNumber() != null && t.getPrNumber() == run.getPrNumber()
+                && isPostPrediction(t.getExecutedAt(), run.getCreatedAt())
                 && ("FAILED".equalsIgnoreCase(t.getOutcome()) || "FLAKY".equalsIgnoreCase(t.getOutcome()))),
             run -> tests.stream().anyMatch(t -> t.getRepositoryId().equals(run.getRepositoryId())
-                && t.getPrNumber() != null && t.getPrNumber() == run.getPrNumber())));
+                && t.getPrNumber() != null && t.getPrNumber() == run.getPrNumber()
+                && isPostPrediction(t.getExecutedAt(), run.getCreatedAt())),
+            run -> (int) tests.stream().filter(t -> t.getRepositoryId().equals(run.getRepositoryId())
+                && t.getPrNumber() != null && t.getPrNumber() == run.getPrNumber()
+                && !isPostPrediction(t.getExecutedAt(), run.getCreatedAt())).count()));
 
         results.add(evaluateCategory(tenantId, repositoryId, OperationalRiskPredictor.CATEGORY_CHANGE_FAILURE, chronologicalRuns, itemsByRunAndCategory,
             run -> deployments.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
                 && d.getPrNumber() != null && d.getPrNumber() == run.getPrNumber()
+                && isPostPrediction(d.getDeployedAt(), run.getCreatedAt())
                 && ("FAILED".equalsIgnoreCase(d.getOutcome()) || "ROLLED_BACK".equalsIgnoreCase(d.getOutcome()))),
             run -> deployments.stream().anyMatch(d -> d.getRepositoryId().equals(run.getRepositoryId())
-                && d.getPrNumber() != null && d.getPrNumber() == run.getPrNumber())));
+                && d.getPrNumber() != null && d.getPrNumber() == run.getPrNumber()
+                && isPostPrediction(d.getDeployedAt(), run.getCreatedAt())),
+            run -> (int) deployments.stream().filter(d -> d.getRepositoryId().equals(run.getRepositoryId())
+                && d.getPrNumber() != null && d.getPrNumber() == run.getPrNumber()
+                && !isPostPrediction(d.getDeployedAt(), run.getCreatedAt())).count()));
 
         results.add(evaluateCategory(tenantId, repositoryId, OperationalRiskPredictor.CATEGORY_INCIDENT, chronologicalRuns, itemsByRunAndCategory,
             run -> incidents.stream().anyMatch(i -> i.getRepositoryId().equals(run.getRepositoryId())
-                && i.getRelatedPrNumber() != null && i.getRelatedPrNumber() == run.getPrNumber()),
-            run -> !incidents.isEmpty()));
+                && i.getRelatedPrNumber() != null && i.getRelatedPrNumber() == run.getPrNumber()
+                && isPostPrediction(i.getOccurredAt(), run.getCreatedAt())),
+            run -> incidents.stream().anyMatch(i -> i.getRepositoryId().equals(run.getRepositoryId())
+                && isPostPrediction(i.getOccurredAt(), run.getCreatedAt())),
+            run -> (int) incidents.stream().filter(i -> i.getRepositoryId().equals(run.getRepositoryId())
+                && i.getRelatedPrNumber() != null && i.getRelatedPrNumber() == run.getPrNumber()
+                && !isPostPrediction(i.getOccurredAt(), run.getCreatedAt())).count()));
 
         auditService.recordCurrent("PREDICTION_EVALUATION_RUN", "MODEL_EVALUATION",
             repositoryId != null ? repositoryId : "workspace",
             "Executed chronological held-out evaluation across " + results.size() + " predictive categories");
         return results;
+    }
+
+    private boolean isPostPrediction(Instant outcomeAt, Instant predictedAt) {
+        if (outcomeAt == null || predictedAt == null) return false;
+        // Require outcomes to be observed at or after the initial prediction (1s tolerance for sub-second clock jitter)
+        return !outcomeAt.isBefore(predictedAt.minusSeconds(1));
     }
 
     private PredictionDtos.ModelEvaluationDto evaluateCategory(
@@ -154,26 +186,34 @@ public class PredictionEvaluationService {
         List<PredictionRunEntity> chronologicalRuns,
         Map<String, Map<String, PredictionItemEntity>> itemsByRun,
         java.util.function.Predicate<PredictionRunEntity> isActualPositive,
-        java.util.function.Predicate<PredictionRunEntity> hasObservedLabel
+        java.util.function.Predicate<PredictionRunEntity> hasObservedLabel,
+        java.util.function.ToIntFunction<PredictionRunEntity> countExcludedLeakage
     ) {
         List<LabelledPair> pairs = new ArrayList<>();
+        int excludedLeakageOutcomes = 0;
         for (PredictionRunEntity run : chronologicalRuns) {
+            excludedLeakageOutcomes += countExcludedLeakage.applyAsInt(run);
             PredictionItemEntity item = itemsByRun.getOrDefault(run.getId(), Map.of()).get(category);
             if (item == null || !hasObservedLabel.test(run)) continue;
             pairs.add(new LabelledPair(run, item, isActualPositive.test(run)));
         }
 
         if (pairs.size() < MIN_TOTAL_MATCHED_SAMPLES) {
-            String note = "Insufficient labelled historical outcomes for chronological held-out evaluation: found "
+            String note = "Insufficient post-prediction labelled outcomes for chronological held-out evaluation: found "
                 + pairs.size() + " matched PR(s), minimum required is " + MIN_TOTAL_MATCHED_SAMPLES
-                + ". Accuracy metrics are intentionally omitted until sufficient confirmed outcomes are ingested.";
+                + (excludedLeakageOutcomes > 0 ? " (" + excludedLeakageOutcomes + " pre-prediction outcome(s) excluded to prevent temporal leakage)." : ".")
+                + " Accuracy metrics are intentionally omitted until sufficient confirmed outcomes are ingested.";
+            Map<String, Object> meta = new LinkedHashMap<>();
+            meta.put("evaluated", false);
+            meta.put("minimumRequired", MIN_TOTAL_MATCHED_SAMPLES);
+            meta.put("excludedPrePredictionOutcomes", excludedLeakageOutcomes);
             PredictionModelEvaluationEntity saved = evaluationRepository.save(
                 PredictionModelEvaluationEntity.create(
                     tenantId, repositoryId, PredictionDtos.ENGINE_VERSION, category,
                     "INSUFFICIENT_LABELLED_DATA", pairs.size(),
                     (int) pairs.stream().filter(LabelledPair::actualPositive).count(),
                     null, null, null, null, null, null,
-                    writeJsonSafe(Map.of("evaluated", false, "minimumRequired", MIN_TOTAL_MATCHED_SAMPLES), "{}"),
+                    writeJsonSafe(meta, "{}"),
                     note
                 )
             );
@@ -202,37 +242,55 @@ public class PredictionEvaluationService {
             calibrationAbsErrorSum += Math.abs(normalizedScore - (actualPos ? 1.0 : 0.0));
         }
 
-        double precision = (tp + fp) == 0 ? 0.0 : (double) tp / (tp + fp);
-        double recall = (tp + fn) == 0 ? 0.0 : (double) tp / (tp + fn);
-        double f1 = (precision + recall) == 0 ? 0.0 : (2.0 * precision * recall) / (precision + recall);
-        double fpr = (fp + tn) == 0 ? 0.0 : (double) fp / (fp + tn);
-        double fnr = (fn + tp) == 0 ? 0.0 : (double) fn / (fn + tp);
-        double calError = calibrationAbsErrorSum / heldOut.size();
+        // Return NULL when class imbalance or zero-prediction causes a zero denominator (never misleading 0.0)
+        BigDecimal precision = (tp + fp) == 0 ? null : round4((double) tp / (tp + fp));
+        BigDecimal recall = (tp + fn) == 0 ? null : round4((double) tp / (tp + fn));
+        BigDecimal f1 = (precision == null || recall == null
+            || (precision.doubleValue() + recall.doubleValue()) == 0.0)
+            ? null
+            : round4((2.0 * precision.doubleValue() * recall.doubleValue())
+                / (precision.doubleValue() + recall.doubleValue()));
+        BigDecimal fpr = (fp + tn) == 0 ? null : round4((double) fp / (fp + tn));
+        BigDecimal fnr = (fn + tp) == 0 ? null : round4((double) fn / (fn + tp));
+        BigDecimal calError = round4(calibrationAbsErrorSum / heldOut.size());
 
-        // Compare against naive always-positive baseline on the exact same held-out slice
-        double naivePrecision = (double) positives / heldOut.size();
-        double naiveRecall = positives > 0 ? 1.0 : 0.0;
-        double naiveF1 = (naivePrecision + naiveRecall) == 0 ? 0.0
-            : (2.0 * naivePrecision * naiveRecall) / (naivePrecision + naiveRecall);
+        boolean singleClassImbalance = (positives == 0 || positives == heldOut.size());
+        Double naiveF1 = null;
+        if (positives > 0) {
+            double naivePrecision = (double) positives / heldOut.size();
+            naiveF1 = (2.0 * naivePrecision * 1.0) / (naivePrecision + 1.0);
+        }
+
+        Instant periodStart = heldOut.get(0).run().getCreatedAt();
+        Instant periodEnd = heldOut.get(heldOut.size() - 1).run().getCreatedAt();
 
         Map<String, Object> comparison = new LinkedHashMap<>();
-        comparison.put("splitMethod", "CHRONOLOGICAL_HELD_OUT_TAIL");
+        comparison.put("splitMethod", "CHRONOLOGICAL_HELD_OUT_TAIL_PRE_OUTCOME");
         comparison.put("totalMatchedPrs", pairs.size());
+        comparison.put("trainWarmupCount", splitIdx);
         comparison.put("heldOutCount", heldOut.size());
+        comparison.put("evaluationPeriodStart", periodStart.toString());
+        comparison.put("evaluationPeriodEnd", periodEnd.toString());
+        comparison.put("excludedPrePredictionOutcomes", excludedLeakageOutcomes);
         comparison.put("thresholdScore", POSITIVE_SCORE_THRESHOLD);
         comparison.put("confusionMatrix", Map.of("tp", tp, "fp", fp, "tn", tn, "fn", fn));
-        comparison.put("naiveAlwaysPositiveF1", round4(naiveF1));
-        comparison.put("f1DeltaVsNaive", round4(f1 - naiveF1));
+        comparison.put("classImbalanceWarning", singleClassImbalance
+            ? "Held-out window contains only one outcome class; undefined ratios are reported as null."
+            : null);
+        comparison.put("naiveAlwaysPositiveF1", naiveF1 != null ? round4(naiveF1) : null);
+        comparison.put("f1DeltaVsNaive", (f1 != null && naiveF1 != null) ? round4(f1.doubleValue() - naiveF1) : null);
 
         String notes = "Chronological held-out evaluation on newest " + heldOut.size() + " of " + pairs.size()
-            + " matched PRs (" + positives + " confirmed positive outcomes). TP=" + tp + ", FP=" + fp
-            + ", TN=" + tn + ", FN=" + fn + ".";
+            + " matched pre-outcome PRs (" + positives + " confirmed positive outcomes, period "
+            + periodStart + " to " + periodEnd + "). TP=" + tp + ", FP=" + fp
+            + ", TN=" + tn + ", FN=" + fn + "."
+            + (singleClassImbalance ? " Single-class held-out window: undefined precision/recall/FPR/FNR omitted." : "");
 
         PredictionModelEvaluationEntity saved = evaluationRepository.save(
             PredictionModelEvaluationEntity.create(
                 tenantId, repositoryId, PredictionDtos.ENGINE_VERSION, category,
                 "EVALUATED", heldOut.size(), positives,
-                round4(precision), round4(recall), round4(f1), round4(fpr), round4(fnr), round4(calError),
+                precision, recall, f1, fpr, fnr, calError,
                 writeJsonSafe(comparison, "{}"), notes
             )
         );

@@ -94,7 +94,9 @@ public class EngineeringRiskAggregator {
             bugContrib,
             bugDraft.riskLevel(),
             "PREDICTIVE_BASELINE",
-            "Confidence: " + bugDraft.confidenceLevel() + " (raw " + bugDraft.rawScore() + ", dedup " + bugDedup + ")"
+            bugDraft.insufficientData()
+                ? "Insufficient historical defect data — structural baseline only (raw " + bugDraft.rawScore() + ", dedup " + bugDedup + ")"
+                : "Confidence: " + bugDraft.confidenceLevel() + " (raw " + bugDraft.rawScore() + ", dedup " + bugDedup + ")"
         ));
 
         // 5. Predicted Test Failure Risk (deduplicated)
@@ -107,7 +109,9 @@ public class EngineeringRiskAggregator {
             testContrib,
             testDraft.riskLevel(),
             "PREDICTIVE_BASELINE",
-            "Confidence: " + testDraft.confidenceLevel() + " (predicted distinct from actual CI results)"
+            testDraft.insufficientData()
+                ? "Insufficient historical CI test data — static selection baseline only (not executed)"
+                : "Confidence: " + testDraft.confidenceLevel() + " (predicted distinct from actual CI results)"
         ));
 
         // 6. Predicted Operational Risk (combines Incident + Change Failure with evidence deduplication)
@@ -116,15 +120,18 @@ public class EngineeringRiskAggregator {
         int opsRaw = Math.max(incidentDraft.rawScore(), changeFailureDraft.rawScore());
         int opsDedup = Math.min(100, Math.max(incDedup, cfDedup) + Math.min(20, Math.min(incDedup, cfDedup) / 2));
         int opsContrib = (int) Math.round(opsDedup * 0.11);
+        boolean opsInsufficient = incidentDraft.insufficientData() && changeFailureDraft.insufficientData();
         channels.add(new PredictionDtos.SignalChannelScore(
             "PREDICTED_OPERATIONAL",
             "Predicted Operational (Incident & Deploy/Rollback)",
             opsRaw,
             opsContrib,
-            BugRiskPredictor.toRiskLevel(opsRaw),
+            opsInsufficient ? "INSUFFICIENT_DATA" : BugRiskPredictor.toRiskLevel(opsRaw),
             "PREDICTIVE_BASELINE",
-            "Incident=" + incidentDraft.riskLevel() + " (" + incidentDraft.rawScore()
-                + "), Deploy/Rollback=" + changeFailureDraft.riskLevel() + " (" + changeFailureDraft.rawScore() + ")"
+            opsInsufficient
+                ? "Insufficient historical incident/deployment data — operational risk cannot be assumed zero"
+                : "Incident=" + incidentDraft.riskLevel() + " (" + incidentDraft.rawScore()
+                    + "), Deploy/Rollback=" + changeFailureDraft.riskLevel() + " (" + changeFailureDraft.rawScore() + ")"
         ));
 
         // 7. Performance Regression Warnings (explicitly static warnings)

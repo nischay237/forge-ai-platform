@@ -11,11 +11,11 @@ permissions:
 
 jobs:
   security-hygiene:
-    name: Security & Config Hygiene Gate
+    name: Security, Config Hygiene & Compose Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Verify no hardcoded demo credentials or dev defaults in prod/docs/frontend
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify no hardcoded demo credentials, dev defaults, or localhost prod fallbacks
         run: |
           if grep -rnE "ForgeUser@2026|forge-local-webhook-secret" README.md docs/ render.yaml docker-compose.yml backend/src/main/resources/application-prod.yml frontend/src/pages/; then
             echo "ERROR: Found hardcoded demo credential or dev secret in production/docs/UI files."
@@ -25,7 +25,20 @@ jobs:
             echo "ERROR: Found hardcoded dev secret in deployment/prod configuration."
             exit 1
           fi
+          if grep -rnE "localhost|127\.0\.0\.1" backend/src/main/resources/application-prod.yml; then
+            echo "ERROR: Found localhost infrastructure fallback in application-prod.yml."
+            exit 1
+          fi
           echo "Security hygiene checks passed."
+      - name: Validate Docker Compose configuration syntax
+        run: |
+          POSTGRES_PASSWORD=ci-check-pg \
+          REDIS_PASSWORD=ci-check-redis \
+          GRAFANA_ADMIN_PASSWORD=ci-check-grafana \
+          FORGE_JWT_SECRET=ci-check-jwt-secret-minimum-thirty-two-bytes-length \
+          FORGE_ENCRYPTION_KEY=ci-check-aes-key-placeholder \
+          docker compose config -q
+          echo "Docker Compose config validation passed."
 
   backend-verify:
     name: Backend (Java 21 + Spring Boot + ArchUnit + Postgres Testcontainers)
@@ -34,35 +47,51 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
-      - name: Run unit, security, multi-tenant & ArchUnit tests
+      - name: Run unit, security, multi-tenant, SSE & ArchUnit tests
         run: chmod +x mvnw && ./mvnw test --no-transfer-progress
       - name: Run PostgreSQL 16 Flyway V1-V6 Testcontainers integration test
-        run: ./mvnw test -Dtest=PostgresMigrationContainersIT --no-transfer-progress
+        run: ./mvnw test -Dtest=PostgresMigrationContainersIT -DfailIfNoTests=true --no-transfer-progress
+      - name: Publish backend Surefire test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-surefire-reports
+          path: backend/target/surefire-reports/
+          if-no-files-found: warn
 
   frontend-verify:
-    name: Frontend (React + TypeScript + Vitest + Build)
+    name: Frontend (React + TypeScript + Vitest + Build + Audit)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Check production dependencies for HIGH/CRITICAL vulnerabilities
+        run: npm audit --omit=dev --audit-level=high
       - name: TypeScript strict typecheck
         run: npm run typecheck
-      - name: Run Vitest unit & security tests
-        run: npm run test
+      - name: Run Vitest unit, security & live timeline tests
+        run: npx vitest run --reporter=default --reporter=junit --outputFile=test-results/vitest-junit.xml
       - name: Production Vite build
         run: npm run build
+      - name: Publish frontend Vitest report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: frontend-vitest-report
+          path: frontend/test-results/vitest-junit.xml
+          if-no-files-found: warn

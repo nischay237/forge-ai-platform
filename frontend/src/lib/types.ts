@@ -416,12 +416,38 @@ export interface AuditLog {
 }
 
 export interface PipelineEvent {
+  eventId?: string;
+  operationId?: string;
+  correlationId?: string;
+  sequence?: number;
   eventType: string;
   resourceId: string;
   stage: string;
+  stageLabel?: string;
+  status?: 'STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | string;
+  stageIndex?: number;
+  totalStages?: number;
   progressPercent: number;
   message: string;
+  details?: Record<string, unknown>;
   timestamp: string;
+}
+
+export interface OperationStatusSnapshot {
+  operationId: string;
+  eventType: string;
+  resourceId: string;
+  correlationId: string;
+  status: 'RUNNING' | 'COMPLETED' | 'FAILED' | string;
+  currentStage: string;
+  currentStageLabel: string;
+  completedStages: number;
+  totalStages: number;
+  latestSequence: number;
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  events: PipelineEvent[];
 }
 
 // --- Predictive Engineering Intelligence DTOs ---

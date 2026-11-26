@@ -16,6 +16,7 @@ import com.forge.platform.messaging.RateLimiterService;
 import com.forge.platform.repository.GithubIngestionClient;
 import com.forge.platform.repository.RepositoryEntity;
 import com.forge.platform.repository.RepositoryJpaRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,6 +29,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
 
@@ -36,6 +38,7 @@ import java.util.Map;
 public class GithubWebhookController {
 
     private static final String DUMMY_HMAC_SECRET = "forge-constant-time-unknown-tenant-hmac-dummy-key";
+    static final int MAX_WEBHOOK_PAYLOAD_BYTES = 1_048_576; // 1 MiB
 
     private final TenantRepository tenantRepository;
     private final RepositoryJpaRepository repositoryJpaRepository;
@@ -48,6 +51,7 @@ public class GithubWebhookController {
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
     private final ObjectProvider<EngineeringWebhookListener> webhookListeners;
+    private final MeterRegistry meterRegistry;
     private final boolean allowInlineDiff;
 
     public GithubWebhookController(
@@ -62,6 +66,7 @@ public class GithubWebhookController {
         AuditService auditService,
         ObjectMapper objectMapper,
         ObjectProvider<EngineeringWebhookListener> webhookListeners,
+        MeterRegistry meterRegistry,
         @Value("${forge.webhooks.allow-inline-diff:false}") boolean allowInlineDiff
     ) {
         this.tenantRepository = tenantRepository;
@@ -75,6 +80,7 @@ public class GithubWebhookController {
         this.auditService = auditService;
         this.objectMapper = objectMapper;
         this.webhookListeners = webhookListeners;
+        this.meterRegistry = meterRegistry;
         this.allowInlineDiff = allowInlineDiff;
     }
 
@@ -87,9 +93,17 @@ public class GithubWebhookController {
         @RequestBody String rawBody,
         HttpServletRequest httpRequest
     ) throws Exception {
+        // 0. Guard against oversized webhook payloads before HMAC/JSON parsing
+        if (rawBody != null && rawBody.getBytes(StandardCharsets.UTF_8).length > MAX_WEBHOOK_PAYLOAD_BYTES) {
+            recordWebhookMetric(eventName, "payload_too_large");
+            throw new ForgeException(HttpStatus.PAYLOAD_TOO_LARGE, "WEBHOOK_PAYLOAD_TOO_LARGE",
+                "Webhook payload exceeds maximum allowed size of 1 MiB");
+        }
+
         // 1. Per-source-IP flood guard BEFORE tenant lookup so unauthenticated callers cannot DoS a victim tenant's bucket
         String clientIp = resolveClientIp(httpRequest);
         if (!rateLimiterService.allowRequest("webhook-ip:" + clientIp, 120, Duration.ofMinutes(1))) {
+            recordWebhookMetric(eventName, "rate_limited");
             throw new RateLimitExceededException("Webhook rate limit exceeded");
         }
 
@@ -97,6 +111,7 @@ public class GithubWebhookController {
         Tenant tenant = tenantRepository.findBySlug(tenantSlug).orElse(null);
         if (tenant == null) {
             cryptoService.verifyGithubSignature(rawBody, DUMMY_HMAC_SECRET, signature);
+            recordWebhookMetric(eventName, "rejected_signature");
             throw new ForgeException(HttpStatus.UNAUTHORIZED, "INVALID_WEBHOOK_SIGNATURE",
                 "HMAC-SHA256 signature verification failed");
         }
@@ -106,12 +121,14 @@ public class GithubWebhookController {
             auditService.recordIsolated(tenant.getId(), "github-webhook@external", "WEBHOOK",
                 "WEBHOOK_SIGNATURE_REJECTED", "WEBHOOK", deliveryId,
                 "Rejected GitHub webhook with invalid HMAC-SHA256 signature", clientIp);
+            recordWebhookMetric(eventName, "rejected_signature");
             throw new ForgeException(HttpStatus.UNAUTHORIZED, "INVALID_WEBHOOK_SIGNATURE",
                 "HMAC-SHA256 signature verification failed");
         }
 
         // 3. Authenticated per-tenant rate limit
         if (!rateLimiterService.allowRequest("webhook-tenant:" + tenant.getId(), 60, Duration.ofMinutes(1))) {
+            recordWebhookMetric(eventName, "rate_limited");
             throw new RateLimitExceededException("Workspace webhook rate limit exceeded");
         }
 
@@ -121,6 +138,7 @@ public class GithubWebhookController {
                 .findFirst()
                 .orElse(null);
             if (listener == null) {
+                recordWebhookMetric(eventName, "ignored");
                 return ResponseEntity.ok(Map.of("status", "IGNORED_EVENT", "event", eventName));
             }
             String nonPrPayloadHash = cryptoService.sha256Hex(rawBody);
@@ -128,14 +146,17 @@ public class GithubWebhookController {
                 ? "gh-eng:" + tenant.getId() + ":" + eventName + ":" + deliveryId.trim()
                 : "gh-eng:" + tenant.getId() + ":" + eventName + ":" + nonPrPayloadHash;
             if (!idempotencyService.tryClaimEvent(nonPrKey, tenant.getId(), "GITHUB_" + eventName.toUpperCase())) {
+                recordWebhookMetric(eventName, "duplicate");
                 return ResponseEntity.ok(Map.of("status", "DUPLICATE_IGNORED", "deliveryId", nonPrKey));
             }
             try {
                 Map<String, Object> result = listener.onGithubEvent(tenant.getId(), eventName, nonPrKey, rawBody);
                 idempotencyService.markCompleted(nonPrKey);
+                recordWebhookMetric(eventName, "accepted");
                 return ResponseEntity.accepted().body(result);
             } catch (Exception ex) {
                 idempotencyService.releaseClaim(nonPrKey);
+                recordWebhookMetric(eventName, "failed");
                 throw ex;
             }
         }
@@ -144,6 +165,7 @@ public class GithubWebhookController {
         String action = root.path("action").asText("opened");
         if (!action.isBlank() && !action.equalsIgnoreCase("opened")
             && !action.equalsIgnoreCase("synchronize") && !action.equalsIgnoreCase("reopened")) {
+            recordWebhookMetric(eventName, "ignored");
             return ResponseEntity.ok(Map.of("status", "IGNORED_ACTION", "action", action));
         }
 
@@ -155,12 +177,14 @@ public class GithubWebhookController {
         String payloadKey = "gh-payload:" + tenant.getId() + ":" + payloadHash;
 
         if (deliveryKey != null && !idempotencyService.tryClaimEvent(deliveryKey, tenant.getId(), "GITHUB_WEBHOOK")) {
+            recordWebhookMetric(eventName, "duplicate");
             return ResponseEntity.ok(Map.of("status", "DUPLICATE_IGNORED", "deliveryId", deliveryKey));
         }
         if (!idempotencyService.tryClaimEvent(payloadKey, tenant.getId(), "GITHUB_WEBHOOK_PAYLOAD")) {
             if (deliveryKey != null) {
                 idempotencyService.markCompleted(deliveryKey);
             }
+            recordWebhookMetric(eventName, "duplicate");
             return ResponseEntity.ok(Map.of("status", "DUPLICATE_IGNORED", "deliveryId", deliveryKey != null ? deliveryKey : payloadKey));
         }
 
@@ -199,6 +223,7 @@ public class GithubWebhookController {
                 idempotencyService.markCompleted(deliveryKey);
             }
             idempotencyService.markCompleted(payloadKey);
+            recordWebhookMetric(eventName, "accepted");
 
             return ResponseEntity.accepted().body(Map.of(
                 "status", "ACCEPTED",
@@ -212,8 +237,14 @@ public class GithubWebhookController {
                 idempotencyService.releaseClaim(deliveryKey);
             }
             idempotencyService.releaseClaim(payloadKey);
+            recordWebhookMetric(eventName, "failed");
             throw ex;
         }
+    }
+
+    private void recordWebhookMetric(String eventName, String outcome) {
+        String safeEvent = (eventName == null || eventName.isBlank()) ? "unknown" : eventName.toLowerCase();
+        meterRegistry.counter("forge.webhooks.processed", "event", safeEvent, "outcome", outcome).increment();
     }
 
     private String resolveClientIp(HttpServletRequest request) {

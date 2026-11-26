@@ -18,9 +18,13 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -46,6 +50,8 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
     private static final Logger log = LoggerFactory.getLogger(HistoricalDataIngestionService.class);
     public static final String OVERVIEW_CACHE_PREFIX = "pred-overview:";
     private static final Pattern CI_TEST_NAME_PATTERN = Pattern.compile("\\b([A-Z][A-Za-z0-9_]{2,80}(?:Test|Tests|IT|Spec))\\b");
+    private static final Instant EARLIEST_VALID_TIMESTAMP = Instant.parse("1990-01-01T00:00:00Z");
+    private static final Duration MAX_FUTURE_SKEW = Duration.ofHours(24);
 
     private static final Set<String> VALID_TEST_OUTCOMES = Set.of("PASSED", "FAILED", "SKIPPED", "FLAKY");
     private static final Set<String> VALID_DEPLOY_OUTCOMES = Set.of("SUCCEEDED", "FAILED", "ROLLED_BACK");
@@ -65,6 +71,7 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
     private final RateLimiterService rateLimiterService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate requiresNewTx;
     private final Counter historicalIngestedCounter;
 
     public HistoricalDataIngestionService(
@@ -79,6 +86,7 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
         RateLimiterService rateLimiterService,
         AuditService auditService,
         ObjectMapper objectMapper,
+        PlatformTransactionManager transactionManager,
         MeterRegistry meterRegistry
     ) {
         this.repositoryJpaRepository = repositoryJpaRepository;
@@ -92,6 +100,8 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
         this.rateLimiterService = rateLimiterService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
+        this.requiresNewTx = new TransactionTemplate(transactionManager);
+        this.requiresNewTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.historicalIngestedCounter = Counter.builder("forge.historical.ingested").register(meterRegistry);
     }
 
@@ -116,7 +126,7 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
         requireRepo(req.repositoryId(), tenantId);
         String outcome = normalizeEnum(req.outcome(), VALID_TEST_OUTCOMES, "INVALID_TEST_OUTCOME",
             "Test outcome must be one of PASSED, FAILED, SKIPPED, FLAKY");
-        Instant executedAt = req.executedAt() != null ? req.executedAt() : Instant.now();
+        Instant executedAt = validateTimestamp(req.executedAt(), "executedAt");
         String extKey = resolveExternalKey("test", req.externalEventKey(),
             req.repositoryId() + "|" + req.testName().trim() + "|" + nullSafe(req.commitSha()) + "|"
                 + nullSafe(req.prNumber()) + "|" + outcome + "|" + executedAt.toEpochMilli());
@@ -129,7 +139,7 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
             );
         }
 
-        HistoricalTestExecutionEntity saved = testExecutionRepository.save(HistoricalTestExecutionEntity.create(
+        HistoricalTestExecutionEntity candidate = HistoricalTestExecutionEntity.create(
             tenantId,
             req.repositoryId(),
             req.ciBuildId(),
@@ -143,7 +153,22 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
             trimOrNull(req.errorSummary()),
             extKey,
             executedAt
-        ));
+        );
+        HistoricalTestExecutionEntity saved;
+        if (req.ciBuildId() != null && !req.ciBuildId().isBlank()) {
+            // Join caller's active transaction so FK ci_build_id -> ci_builds(id) sees uncommitted parent build
+            saved = testExecutionRepository.save(candidate);
+        } else {
+            try {
+                saved = requiresNewTx.execute(s -> testExecutionRepository.saveAndFlush(candidate));
+            } catch (DataIntegrityViolationException dup) {
+                HistoricalTestExecutionEntity raceWinner = testExecutionRepository
+                    .findByTenantIdAndExternalEventKey(tenantId, extKey).orElseThrow(() -> dup);
+                return new PredictionDtos.IngestionResultDto(
+                    raceWinner.getId(), "TEST_EXECUTION", true, extKey, raceWinner.getExecutedAt()
+                );
+            }
+        }
 
         recordEngineeringEvent(tenantId, req.repositoryId(), extKey, "TEST_EXECUTION", source,
             req.prNumber(), req.commitSha(), null, req, executedAt);
@@ -175,7 +200,7 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
         requireRepo(req.repositoryId(), tenantId);
         String outcome = normalizeEnum(req.outcome(), VALID_DEPLOY_OUTCOMES, "INVALID_DEPLOYMENT_OUTCOME",
             "Deployment outcome must be one of SUCCEEDED, FAILED, ROLLED_BACK");
-        Instant deployedAt = req.deployedAt() != null ? req.deployedAt() : Instant.now();
+        Instant deployedAt = validateTimestamp(req.deployedAt(), "deployedAt");
         String env = (req.environment() == null || req.environment().isBlank()) ? "production" : req.environment().trim();
         String extKey = resolveExternalKey("deploy", req.externalEventKey(),
             req.repositoryId() + "|" + req.serviceName().trim() + "|" + env + "|"
@@ -189,7 +214,7 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
             );
         }
 
-        DeploymentRecordEntity saved = deploymentRecordRepository.save(DeploymentRecordEntity.create(
+        DeploymentRecordEntity candidate = DeploymentRecordEntity.create(
             tenantId,
             req.repositoryId(),
             req.serviceName().trim(),
@@ -202,7 +227,17 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
             trimOrNull(req.summary()),
             extKey,
             deployedAt
-        ));
+        );
+        DeploymentRecordEntity saved;
+        try {
+            saved = requiresNewTx.execute(s -> deploymentRecordRepository.saveAndFlush(candidate));
+        } catch (DataIntegrityViolationException dup) {
+            DeploymentRecordEntity raceWinner = deploymentRecordRepository
+                .findByTenantIdAndExternalEventKey(tenantId, extKey).orElseThrow(() -> dup);
+            return new PredictionDtos.IngestionResultDto(
+                raceWinner.getId(), "DEPLOYMENT", true, extKey, raceWinner.getDeployedAt()
+            );
+        }
 
         recordEngineeringEvent(tenantId, req.repositoryId(), extKey,
             "ROLLED_BACK".equals(outcome) ? "DEPLOYMENT_ROLLBACK" : "DEPLOYMENT",
@@ -227,7 +262,12 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
             "INVALID_INCIDENT_STATUS",
             "Incident status must be one of OPEN, MITIGATED, RESOLVED"
         );
-        Instant occurredAt = req.occurredAt() != null ? req.occurredAt() : Instant.now();
+        Instant occurredAt = validateTimestamp(req.occurredAt(), "occurredAt");
+        Instant resolvedAt = req.resolvedAt() != null ? validateTimestamp(req.resolvedAt(), "resolvedAt") : null;
+        if (resolvedAt != null && resolvedAt.isBefore(occurredAt)) {
+            throw new ForgeException(HttpStatus.BAD_REQUEST, "INVALID_TIMESTAMP_RANGE",
+                "Incident resolvedAt cannot be earlier than occurredAt");
+        }
         String extKey = resolveExternalKey("incident", req.externalEventKey(),
             req.repositoryId() + "|" + req.serviceName().trim() + "|" + req.title().trim() + "|" + occurredAt.toEpochMilli());
 
@@ -242,7 +282,7 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
         List<String> modules = req.affectedModules() == null ? List.of()
             : req.affectedModules().stream().filter(m -> m != null && !m.isBlank()).map(String::trim).distinct().toList();
 
-        IncidentRecordEntity saved = incidentRecordRepository.save(IncidentRecordEntity.create(
+        IncidentRecordEntity candidate = IncidentRecordEntity.create(
             tenantId,
             req.repositoryId(),
             req.title().trim(),
@@ -255,8 +295,18 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
             trimOrNull(req.evidenceNote()),
             extKey,
             occurredAt,
-            req.resolvedAt()
-        ));
+            resolvedAt
+        );
+        IncidentRecordEntity saved;
+        try {
+            saved = requiresNewTx.execute(s -> incidentRecordRepository.saveAndFlush(candidate));
+        } catch (DataIntegrityViolationException dup) {
+            IncidentRecordEntity raceWinner = incidentRecordRepository
+                .findByTenantIdAndExternalEventKey(tenantId, extKey).orElseThrow(() -> dup);
+            return new PredictionDtos.IngestionResultDto(
+                raceWinner.getId(), "INCIDENT", true, extKey, raceWinner.getOccurredAt()
+            );
+        }
 
         recordEngineeringEvent(tenantId, req.repositoryId(), extKey, "CONFIRMED_INCIDENT", "api",
             req.relatedPrNumber(), null, saved.getServiceName(), req, occurredAt);
@@ -280,7 +330,7 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
             "INVALID_DEFECT_STATUS",
             "Defect status must be OPEN or FIXED"
         );
-        Instant reportedAt = req.reportedAt() != null ? req.reportedAt() : Instant.now();
+        Instant reportedAt = validateTimestamp(req.reportedAt(), "reportedAt");
         String extKey = resolveExternalKey("defect", req.externalEventKey(),
             req.repositoryId() + "|" + req.title().trim() + "|" + nullSafe(req.moduleName()) + "|" + reportedAt.toEpochMilli());
 
@@ -296,7 +346,7 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
             : req.filePaths().stream().filter(f -> f != null && !f.isBlank()).map(String::trim).distinct().toList();
         String moduleName = deriveModuleName(req.moduleName(), files.isEmpty() ? null : files.get(0));
 
-        DefectRecordEntity saved = defectRecordRepository.save(DefectRecordEntity.create(
+        DefectRecordEntity candidate = DefectRecordEntity.create(
             tenantId,
             req.repositoryId(),
             req.title().trim(),
@@ -308,7 +358,17 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
             status,
             extKey,
             reportedAt
-        ));
+        );
+        DefectRecordEntity saved;
+        try {
+            saved = requiresNewTx.execute(s -> defectRecordRepository.saveAndFlush(candidate));
+        } catch (DataIntegrityViolationException dup) {
+            DefectRecordEntity raceWinner = defectRecordRepository
+                .findByTenantIdAndExternalEventKey(tenantId, extKey).orElseThrow(() -> dup);
+            return new PredictionDtos.IngestionResultDto(
+                raceWinner.getId(), "DEFECT", true, extKey, raceWinner.getReportedAt()
+            );
+        }
 
         recordEngineeringEvent(tenantId, req.repositoryId(), extKey, "CONFIRMED_DEFECT", "api",
             req.introducedPrNumber(), null, moduleName, req, reportedAt);
@@ -360,12 +420,13 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
                     int n = prs.get(0).path("number").asInt(0);
                     if (n > 0) prNumber = n;
                 }
+                Instant runTimestamp = parseWebhookTimestamp(run.path("updated_at").asText(run.path("created_at").asText("")));
                 PredictionDtos.IngestionResultDto res = ingestTestExecutionForTenant(
                     tenantId, "github-webhook@external", "WEBHOOK", "github-webhook",
                     new PredictionDtos.IngestTestExecutionRequest(
                         repo.getId(), null, prNumber, sha, name, null, repo.getName(),
                         outcome, 0L, "FAILED".equals(outcome) ? "GitHub workflow conclusion: " + conclusion : null,
-                        deliveryKey, Instant.now()
+                        deliveryKey, runTimestamp
                     )
                 );
                 return Map.of("status", "INGESTED", "recordType", res.recordType(), "id", res.id(), "duplicate", res.duplicate());
@@ -385,12 +446,15 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
                     : ("success".equalsIgnoreCase(state) ? "SUCCEEDED" : "FAILED");
                 String env = depNode.path("environment").asText("production");
                 String sha = depNode.path("sha").asText(null);
+                Instant deployTimestamp = parseWebhookTimestamp(
+                    statusNode.path("updated_at").asText(statusNode.path("created_at").asText(""))
+                );
                 PredictionDtos.IngestionResultDto res = ingestDeploymentForTenant(
                     tenantId, "github-webhook@external", "WEBHOOK", "github-webhook",
                     new PredictionDtos.IngestDeploymentRequest(
                         repo.getId(), repo.getName(), env, null, sha, outcome, null,
                         false, desc.isBlank() ? "GitHub deployment_status: " + state : desc,
-                        deliveryKey, Instant.now()
+                        deliveryKey, deployTimestamp
                     )
                 );
                 return Map.of("status", "INGESTED", "recordType", res.recordType(), "id", res.id(), "duplicate", res.duplicate());
@@ -464,6 +528,27 @@ public class HistoricalDataIngestionService implements EngineeringWebhookListene
 
     private void evictOverviewCache(String tenantId) {
         cacheService.evict(OVERVIEW_CACHE_PREFIX + tenantId);
+    }
+
+    private Instant validateTimestamp(Instant candidate, String fieldName) {
+        Instant resolved = candidate != null ? candidate : Instant.now();
+        Instant maxAllowed = Instant.now().plus(MAX_FUTURE_SKEW);
+        if (resolved.isAfter(maxAllowed) || resolved.isBefore(EARLIEST_VALID_TIMESTAMP)) {
+            throw new ForgeException(HttpStatus.BAD_REQUEST, "INVALID_TIMESTAMP",
+                "Timestamp '" + fieldName + "' must be between 1990-01-01 and 24 hours from now");
+        }
+        return resolved;
+    }
+
+    private Instant parseWebhookTimestamp(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Instant.now();
+        }
+        try {
+            return validateTimestamp(Instant.parse(raw.trim()), "webhookTimestamp");
+        } catch (Exception ex) {
+            return Instant.now();
+        }
     }
 
     private String normalizeEnum(String raw, Set<String> allowed, String code, String msg) {

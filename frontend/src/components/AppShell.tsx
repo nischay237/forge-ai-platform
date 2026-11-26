@@ -26,10 +26,16 @@ export function AppShell() {
   const tenant = useForgeStore((s) => s.tenant);
   const refreshToken = useForgeStore((s) => s.refreshToken);
   const sseConnected = useForgeStore((s) => s.sseConnected);
+  const sseReconnecting = useForgeStore((s) => s.sseReconnecting);
   const latestEvent = useForgeStore((s) => s.latestPipelineEvent);
+  const operationsById = useForgeStore((s) => s.operationsById);
   const clearSession = useForgeStore((s) => s.clearSession);
   const setCommandOpen = useForgeStore((s) => s.setCommandOpen);
   const navigate = useNavigate();
+
+  const activeOperation = latestEvent
+    ? operationsById[latestEvent.operationId || `${latestEvent.eventType}:${latestEvent.resourceId}`]
+    : undefined;
 
   const isAdmin = user?.role === 'OWNER' || user?.role === 'ADMIN';
   const visibleNav = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
@@ -69,10 +75,14 @@ export function AppShell() {
               <span
                 className={cn(
                   'w-1.5 h-1.5 rounded-full',
-                  sseConnected ? 'bg-emerald-600' : 'bg-stone-400'
+                  sseConnected
+                    ? 'bg-emerald-600'
+                    : sseReconnecting
+                      ? 'bg-amber-500 animate-pulse motion-reduce:animate-none'
+                      : 'bg-stone-400'
                 )}
               />
-              {sseConnected ? 'SSE Live' : 'Idle'}
+              {sseConnected ? 'SSE Live' : sseReconnecting ? 'Reconnecting' : 'Idle'}
             </span>
           </div>
 
@@ -142,24 +152,49 @@ export function AppShell() {
         </div>
 
         {latestEvent && latestEvent.stage !== 'CONNECTED' && (
-          <div className="border-t border-[#E5E5E0] bg-[#FAFAF8] px-4 sm:px-6 py-2">
+          <div className="border-t border-[#1E212A] bg-[#0E1015] text-zinc-100 px-4 sm:px-6 py-2">
             <div className="max-w-[1360px] mx-auto flex items-center justify-between gap-4 text-xs">
               <div className="flex items-center gap-2.5 min-w-0">
-                <span className="font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#111111] text-white shrink-0">
-                  {latestEvent.stage}
+                <span
+                  className={cn(
+                    'font-mono text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 uppercase',
+                    activeOperation?.status === 'FAILED'
+                      ? 'bg-red-500/20 text-red-200 border border-red-400/35'
+                      : activeOperation?.status === 'COMPLETED'
+                        ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-400/35'
+                        : 'bg-indigo-500/20 text-indigo-200 border border-indigo-400/35'
+                  )}
+                >
+                  {latestEvent.stageLabel || latestEvent.stage}
                 </span>
-                <span className="text-stone-700 truncate">{latestEvent.message}</span>
+                <span className="text-zinc-300 truncate">{latestEvent.message}</span>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <div className="w-24 h-1.5 rounded-full bg-stone-200 overflow-hidden">
-                  <div
-                    className="h-full bg-[#111111] transition-all duration-300"
-                    style={{ width: `${latestEvent.progressPercent}%` }}
-                  />
-                </div>
-                <span className="font-mono text-[11px] text-stone-600 tabular-nums">
-                  {latestEvent.progressPercent}%
-                </span>
+              <div className="flex items-center gap-3 shrink-0">
+                {activeOperation && activeOperation.totalStages > 0 && (
+                  <span className="font-mono text-[11px] text-zinc-400 tabular-nums">
+                    {activeOperation.status === 'COMPLETED'
+                      ? `${activeOperation.totalStages}/${activeOperation.totalStages} stages`
+                      : `Stage ${Math.min(activeOperation.completedStages + 1, activeOperation.totalStages)}/${activeOperation.totalStages}`}
+                  </span>
+                )}
+                {latestEvent.eventType === 'PR_REVIEW' && (
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/reviews/${latestEvent.resourceId}`)}
+                    className="text-[11px] font-mono text-indigo-300 hover:text-indigo-200 underline cursor-pointer"
+                  >
+                    Inspect
+                  </button>
+                )}
+                {latestEvent.eventType === 'PR_PREDICTION' && (
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/predictions?reviewId=${encodeURIComponent(latestEvent.resourceId)}`)}
+                    className="text-[11px] font-mono text-indigo-300 hover:text-indigo-200 underline cursor-pointer"
+                  >
+                    Inspect
+                  </button>
+                )}
               </div>
             </div>
           </div>

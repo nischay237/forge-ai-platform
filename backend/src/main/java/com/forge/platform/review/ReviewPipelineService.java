@@ -249,9 +249,11 @@ public class ReviewPipelineService implements DomainEventHandler {
             "Queued PR #" + review.getPrNumber() + " (" + review.getTitle() + ") on " + repo.getFullName() + " via Transactional Outbox",
             "api");
 
-        sseHubService.publish(tenantId, PipelineEvent.of(
-            "PR_REVIEW", review.getId(), "QUEUED", 10,
-            "Queued PR #" + review.getPrNumber() + " via Transactional Outbox"
+        sseHubService.publish(tenantId, PipelineEvent.stage(
+            "PR_REVIEW", review.getId(), "QUEUED",
+            "Request accepted & queued", "STARTED", 1, 8,
+            "Queued PR #" + review.getPrNumber() + " (" + repo.getFullName() + ") via Transactional Outbox",
+            Map.of("prNumber", review.getPrNumber(), "repository", repo.getFullName())
         ));
 
         return toSummaryDto(review, repo.getFullName(), List.of());
@@ -295,9 +297,11 @@ public class ReviewPipelineService implements DomainEventHandler {
                     reviewRepository.save(review);
                 })
             );
-            sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_REVIEW", reviewId, "FAILED", 100,
-                "Review pipeline encountered an error and will retry if eligible"
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_REVIEW", reviewId, "FAILED",
+                "Review pipeline failed", "FAILED", 8, 8,
+                "Review pipeline encountered an error: " + (reason != null ? reason : "unexpected error"),
+                Map.of("error", reason != null ? reason : "unexpected error")
             ));
         } catch (Exception ignored) {
             // best effort status update
@@ -315,21 +319,25 @@ public class ReviewPipelineService implements DomainEventHandler {
         reviewRepository.save(review);
 
         if (emitLiveProgress) {
-            sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_REVIEW", reviewId, "INGESTING_DIFF", 18,
-                "Parsing unified diff hunks & changed symbols for PR #" + review.getPrNumber()
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_REVIEW", reviewId, "INGESTING_DIFF",
+                "Parsing unified diff hunks", "IN_PROGRESS", 2, 8,
+                "Parsing unified diff hunks & changed symbols for PR #" + review.getPrNumber(),
+                Map.of("prNumber", review.getPrNumber())
             ));
         }
 
         List<UnifiedDiffParser.ParsedDiffFile> parsedFiles = diffParser.parse(review.getRawDiff());
 
-        // Stage 2: AST Dependency Change Impact Analysis
+        // Stage 3: AST Dependency Change Impact Analysis
         review.setCurrentStage("AST_IMPACT_ANALYSIS");
         reviewRepository.save(review);
         if (emitLiveProgress) {
-            sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_REVIEW", reviewId, "AST_IMPACT_ANALYSIS", 36,
-                "Computing JavaParser & TS/JS AST dependency blast radius across " + parsedFiles.size() + " changed files"
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_REVIEW", reviewId, "AST_IMPACT_ANALYSIS",
+                "Computing AST dependency blast radius", "IN_PROGRESS", 3, 8,
+                "Computing JavaParser & TS/JS AST dependency blast radius across " + parsedFiles.size() + " changed file(s)",
+                Map.of("changedFiles", parsedFiles.size())
             ));
         }
 
@@ -343,35 +351,42 @@ public class ReviewPipelineService implements DomainEventHandler {
                 // file may be new and not yet in index
             }
         }
+        int totalImpactedDependents = impacts.stream().mapToInt(CodeIntelDtos.ChangeImpactResponse::totalImpacted).sum();
 
-        // Stage 3: Deterministic API & Database Migration Compatibility Analysis
+        // Stage 4: Deterministic API & Database Migration Compatibility Analysis
         review.setCurrentStage("CONTRACT_AND_MIGRATION_ANALYSIS");
         reviewRepository.save(review);
         if (emitLiveProgress) {
-            sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_REVIEW", reviewId, "CONTRACT_AND_MIGRATION_ANALYSIS", 52,
-                "Checking OpenAPI / Spring REST contract compatibility & SQL migration safety"
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_REVIEW", reviewId, "CONTRACT_AND_MIGRATION_ANALYSIS",
+                "Checking REST API & SQL migration compatibility", "IN_PROGRESS", 4, 8,
+                "Inspecting OpenAPI/Spring REST endpoints & SQL DDL safety (" + totalImpactedDependents + " downstream dependents)",
+                Map.of("changedFiles", parsedFiles.size(), "downstreamDependents", totalImpactedDependents)
             ));
         }
         List<AiReviewEngine.FindingProposal> apiFindings = apiCompatibilityAnalyzer.analyze(parsedFiles);
         List<AiReviewEngine.FindingProposal> migrationFindings = migrationCompatibilityAnalyzer.analyze(parsedFiles);
 
-        // Stage 4: Security Scanner + Static Defect Engine + Optional AI Contextual Enrichment
+        // Stage 5: Security Scanner + Static Defect Engine + Optional AI Contextual Enrichment
         review.setCurrentStage("SECURITY_SCANNING");
         reviewRepository.save(review);
         if (emitLiveProgress) {
-            sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_REVIEW", reviewId, "SECURITY_SCANNING", 68,
-                "Running secret entropy/pattern scanner, SAST rules & prompt-injection guard"
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_REVIEW", reviewId, "SECURITY_SCANNING",
+                "Scanning secrets, SAST & prompt-injection patterns", "IN_PROGRESS", 5, 8,
+                "Running secret entropy/pattern scanner, SAST rules & prompt-injection guard",
+                Map.of("apiFindings", apiFindings.size(), "migrationFindings", migrationFindings.size())
             ));
         }
 
         review.setCurrentStage("AI_CONTEXT_REVIEW");
         reviewRepository.save(review);
         if (emitLiveProgress) {
-            sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_REVIEW", reviewId, "AI_CONTEXT_REVIEW", 80,
-                "Synthesizing contextual explanations & patch suggestions (" + review.getPromptVersion() + ")"
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_REVIEW", reviewId, "AI_CONTEXT_REVIEW",
+                "Synthesizing contextual review findings", "IN_PROGRESS", 6, 8,
+                "Synthesizing contextual explanations & patch suggestions (" + review.getPromptVersion() + ")",
+                Map.of("promptVersion", review.getPromptVersion())
             ));
         }
 
@@ -388,13 +403,15 @@ public class ReviewPipelineService implements DomainEventHandler {
             aiOutput.findings(), apiFindings, migrationFindings
         );
 
-        // Stage 5: Intelligent Test Selection (static, never claimed executed) + Deterministic Change Risk Engine
+        // Stage 7: Intelligent Test Selection (static, never claimed executed) + Deterministic Change Risk Engine
         review.setCurrentStage("RISK_AND_TEST_SELECTION");
         reviewRepository.save(review);
         if (emitLiveProgress) {
-            sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_REVIEW", reviewId, "RISK_AND_TEST_SELECTION", 92,
-                "Evaluating Policy-as-Code merge decision (PASS/WARN/BLOCK) & impacted test selection"
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_REVIEW", reviewId, "RISK_AND_TEST_SELECTION",
+                "Evaluating policy merge decision & impacted tests", "IN_PROGRESS", 7, 8,
+                "Evaluating Policy-as-Code merge decision (PASS/WARN/BLOCK) & selecting impacted tests across " + allProposals.size() + " finding(s)",
+                Map.of("candidateFindings", allProposals.size(), "modelUsed", aiOutput.modelUsed())
             ));
         }
 
@@ -474,10 +491,18 @@ public class ReviewPipelineService implements DomainEventHandler {
             "worker");
 
         if (emitLiveProgress) {
-            sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_REVIEW", reviewId, "COMPLETED", 100,
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "PR_REVIEW", reviewId, "COMPLETED",
+                "Review complete & persisted", "COMPLETED", 8, 8,
                 "Review complete [" + riskAssessment.mergeDecision() + "]: " + savedFindings.size()
-                    + " findings (Risk " + riskAssessment.riskScore() + "/100)"
+                    + " finding(s) (Risk " + riskAssessment.riskScore() + "/100, " + elapsedMs + "ms)",
+                Map.of(
+                    "mergeDecision", riskAssessment.mergeDecision(),
+                    "riskScore", riskAssessment.riskScore(),
+                    "findingsCount", savedFindings.size(),
+                    "selectedTests", testPlan.recommendedCount(),
+                    "elapsedMs", elapsedMs
+                )
             ));
         }
 

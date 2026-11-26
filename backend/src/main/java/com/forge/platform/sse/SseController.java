@@ -1,13 +1,17 @@
 package com.forge.platform.sse;
 
+import com.forge.platform.common.ResourceNotFoundException;
 import com.forge.platform.common.TenantContext;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/stream")
@@ -40,5 +44,25 @@ public class SseController {
             ? principal.tenantId()
             : sseTicketService.consumeTicket(ticket);
         return sseHubService.subscribe(tenantId);
+    }
+
+    /**
+     * Authenticated, tenant-scoped recovery endpoint returning recent/active pipeline operations
+     * so browser refreshes and reconnections restore exact backend stage progress without fake timers.
+     */
+    @GetMapping("/operations")
+    public List<OperationStatusSnapshot> listOperations(
+        @RequestParam(name = "resourceId", required = false) String resourceId
+    ) {
+        return sseHubService.listRecentOperations(TenantContext.requireTenantId(), resourceId);
+    }
+
+    /**
+     * Authenticated, tenant-scoped lookup for a single operation's ordered stage timeline.
+     */
+    @GetMapping("/operations/{operationId}")
+    public OperationStatusSnapshot getOperation(@PathVariable String operationId) {
+        return sseHubService.getOperationSnapshot(TenantContext.requireTenantId(), operationId)
+            .orElseThrow(() -> new ResourceNotFoundException("Pipeline operation not found: " + operationId));
     }
 }

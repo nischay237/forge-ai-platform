@@ -12,6 +12,7 @@ import type {
   FindingSuppression,
   HistoricalContextResponse,
   IngestionResultDto,
+  OperationStatusSnapshot,
   OverviewAnalyticsDto,
   PredictionEvidenceResponse,
   PredictionModelEvaluationDto,
@@ -159,6 +160,14 @@ export const api = {
     request<{ ticket: string; expiresInSeconds: number }>('/api/v1/stream/ticket', {
       method: 'POST',
     }),
+  listStreamOperations: (resourceId?: string) =>
+    request<OperationStatusSnapshot[]>(
+      resourceId
+        ? `/api/v1/stream/operations?resourceId=${enc(resourceId)}`
+        : '/api/v1/stream/operations'
+    ),
+  getStreamOperation: (operationId: string) =>
+    request<OperationStatusSnapshot>(`/api/v1/stream/operations/${enc(operationId)}`),
 
   getOverview: () => request<OverviewAnalyticsDto>('/api/v1/analytics/overview'),
 

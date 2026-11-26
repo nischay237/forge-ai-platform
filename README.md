@@ -35,18 +35,19 @@
    - **SAST & IaC Rules**: SQLi, SSRF, Path Traversal, Weak Crypto, Unsafe Deserialization, XSS, Prompt Injection (`FORGE-PROMPT-001`), plus `Dockerfile`, Kubernetes YAML, and GitHub Actions workflow checks.
    - **SCA & Export Standards**: Maven (`pom.xml`) and npm (`package.json`) dependency extraction against an offline deterministic CVE catalog, **CycloneDX 1.5 JSON SBOM** export (`GET /api/v1/security/repositories/{id}/sbom`), **OASIS SARIF 2.1.0** export (`GET /api/v1/security/repositories/{id}/sarif`), and persistent **Finding Suppressions** (`GET / POST / DELETE /api/v1/security/suppressions`).
 6. **Hardened Multi-Tenant Security & Identity (`identity`, `common`, `sse`)**
-   - Strict profile separation (`local`, `demo`, `test`, `prod`) with fail-fast **`ProductionSecurityValidator`** that blocks startup on missing/weak secrets or enabled demo seeding in production.
-   - HS256 JWT access tokens (`jti`, `iss`, `aud`, `ver`) + **rotating refresh tokens** (`POST /api/v1/auth/refresh`) with reuse-detection family revocation, JTI logout revocation (`POST /api/v1/auth/logout`), and brute-force account lockout (`HTTP 423`).
-   - **Single-use SSE tickets** (`POST /api/v1/stream/ticket` -> `GET /api/v1/stream/events?ticket=...`) — JWTs are never accepted in query parameters.
+   - Strict profile separation (`local`, `demo`, `test`, `prod`) with zero localhost infrastructure fallbacks in `application-prod.yml` and fail-fast **`ProductionSecurityValidator`** enforcing strong JWT/AES/DB/Redis secrets, non-localhost DB/Redis/Kafka hosts, non-wildcard CORS, and disabled demo seeding in production.
+   - HS256 JWT access tokens (`jti`, `iss`, `aud`, `ver`) + **concurrency-safe rotating refresh tokens** (`PESSIMISTIC_WRITE` + atomic `revokeIfActive`, reuse-detection family revocation), JTI logout revocation, HTTP security response headers, and brute-force account lockout (`HTTP 423`).
+   - **Single-use SSE tickets** (`POST /api/v1/stream/ticket` -> `GET /api/v1/stream/events?ticket=...`) with fail-closed Redis ticket redemption — JWTs are never accepted in query parameters.
    - Versioned **AES-256-GCM encryption** (`v1:<kid>:<base64>`) with tenant/purpose AAD binding and zero-downtime key rotation (`FORGE_ENCRYPTION_PREVIOUS_KEYS`).
-   - Per-tenant CSPRNG GitHub webhook secrets (`POST /api/v1/settings/rotate-webhook-secret`), constant-time HMAC-SHA256 verification, payload + delivery replay protection, and optional PostgreSQL 16 Row-Level Security ([docs/postgres-rls.sql](docs/postgres-rls.sql)).
+   - Per-tenant CSPRNG GitHub webhook secrets (`POST /api/v1/settings/rotate-webhook-secret`), 1 MiB payload size guard (`HTTP 413`), constant-time HMAC-SHA256 verification, payload + delivery replay protection, and optional PostgreSQL 16 Row-Level Security ([docs/postgres-rls.sql](docs/postgres-rls.sql)).
 7. **Predictive Engineering Intelligence Engine (`prediction`)**
    - **Deterministic Failure Baselines:** Explainable pre-merge forecasts for **Bug/Defect Risk**, **Test Failure Risk** (predicted tests strictly separated from actual CI test executions), **Production Incident Risk** (correlational evidence only — never claims unverified causation), **Deployment Change Failure & Rollback Risk** (tracking failed deployments, rollbacks, incidents, and defects separately), and **Static Performance Regression Warnings** (N+1 DB queries, nested loops, unbounded reads, broad cache invalidations, sync I/O in loops).
    - **7-Channel Deduplicated Risk Aggregation:** Keeps static code analysis, dependency impact, security, predicted defect, predicted test failure, predicted operational risk, and static performance warnings separate without double-counting shared evidence. Predictions are advisory and **never** automatically block a PR.
-   - **Real Historical Engineering Data & Held-Out Evaluation:** Idempotent ingestion APIs (`/api/v1/predictions/history/{tests|deployments|incidents|defects}`) plus signed GitHub `workflow_run` & `deployment_status` webhook support. Chronological held-out evaluation (`POST /api/v1/predictions/evaluations/run`) honestly returns `INSUFFICIENT_LABELLED_DATA` (with omitted metrics) until at least 5 real matched outcomes exist — never fabricating accuracy or uncalibrated probabilities.
-8. **Distributed Async Reliability & Evaluation (`messaging`, `ci`, `analytics`)**
-   - Atomic **Transactional Outbox** (`outbox_events`) with worker leases, two-phase JDBC idempotency (`processed_events`), Apache Kafka `@RetryableTopic` + `ORIGINAL_TOPIC` DLT routing, atomic Lua Redis rate limiting, and Resilience4j circuit breakers on GitHub & LLM calls.
-   - 12-case reproducible deterministic evaluation suite (`forge-deterministic-eval-v2`) measuring Precision, Recall, F1, False-Positive Rate, and Latency.
+   - **Real Historical Engineering Data & Anti-Leakage Held-Out Evaluation:** Idempotent ingestion APIs (`/api/v1/predictions/history/{tests|deployments|incidents|defects}`) with timestamp validation plus signed GitHub `workflow_run` & `deployment_status` webhooks. Chronological held-out evaluation (`POST /api/v1/predictions/evaluations/run`) uses the earliest pre-outcome prediction run per PR, excludes pre-prediction outcomes to prevent temporal leakage, reports `null` for undefined class-imbalance ratios, and returns `INSUFFICIENT_LABELLED_DATA` until at least 5 real matched outcomes exist.
+8. **Real-Time Pipeline Timeline, Distributed Reliability & Observability (`sse`, `messaging`, `ci`, `analytics`)**
+   - **Live Processing Timeline (`LiveProcessingPanel`)**: Dark-first connected vertical stage timeline rendering genuine backend stage transitions (`PR_REVIEW`, `PR_PREDICTION`, `REPO_INDEX`), monotonic sequence deduplication, wall-clock elapsed duration, expandable diagnostics, error retry, and automatic browser-refresh recovery via `GET /api/v1/stream/operations`. Zero fake progress timers or fabricated percentages.
+   - Atomic multi-replica **Transactional Outbox** (`tryClaimEvent` conditional claim + worker leases + dead-letter requeue), two-phase JDBC idempotency, Apache Kafka `@RetryableTopic` + `ORIGINAL_TOPIC` DLT routing, resilient Redis caching & atomic Lua rate limiting, and Resilience4j circuit breakers on GitHub & LLM calls.
+   - End-to-end `X-Correlation-Id` propagation (HTTP -> MDC -> Outbox -> Kafka -> SSE), native structured JSON logging in `prod`, Kubernetes liveness/readiness health probes (`/actuator/health/liveness`, `/actuator/health/readiness`), and Prometheus metrics (`forge.reviews.*`, `forge.predictions.*`, `forge.outbox.*`, `forge.kafka.dlt.events`, `forge.webhooks.processed`, `forge.sse.*`, `forge.redis.errors`).
 
 ---
 
@@ -117,11 +118,12 @@ All stateful containers bind exclusively to `127.0.0.1`. See [docs/RUNBOOK.md](d
 cd backend
 .\mvnw.cmd test
 
-# PostgreSQL 16 Flyway V1-V5 Testcontainers Suite (requires Docker daemon; runs automatically in GitHub Actions CI)
+# PostgreSQL 16 Flyway V1-V6 Testcontainers Suite (requires Docker daemon; runs automatically in GitHub Actions CI)
 .\mvnw.cmd test -Dtest=PostgresMigrationContainersIT
 
-# Frontend (Strict TypeScript + Vitest + Code-Split Production Bundle)
+# Frontend (Production Dependency Audit + Strict TypeScript + Vitest + Production Bundle)
 cd frontend
+npm audit --omit=dev --audit-level=high
 npm run typecheck
 npm run test
 npm run build

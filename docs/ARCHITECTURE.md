@@ -9,17 +9,17 @@ flowchart TB
     LLM["LLM Provider (Spring AI OpenAI via Resilience4j LlmReviewClient)"]
 
     subgraph FORGE["FORGE Modular Monolith (Java 21 LTS + Spring Boot 3.5)"]
-        API["REST API + JWT/Refresh Auth + RBAC + TenantContext"]
-        SSE["SSE Hub (Single-Use Tickets, 20 Emitters/Tenant)"]
-        ENG["Deterministic Engines: JavaParser AST | TS/JS Analyzer | API & Migration Compat | Test Selector | Security/SCA/SBOM/SARIF | Change Risk Policy Engine"]
+        API["REST API + CorrelationIdFilter + JWT/Refresh Auth + RBAC + TenantContext"]
+        SSE["SSE Hub (Single-Use Tickets, Monotonic Seq, Operation Snapshot Recovery)"]
+        ENG["Deterministic Engines: JavaParser AST | TS/JS Analyzer | API & Migration Compat | Test Selector | Security/SCA/SBOM/SARIF | Change Risk Policy | Predictive Baselines"]
         AI["AI Enrichment Engine (Prompt-Injection Quarantine + System/User Separation)"]
-        OUTBOX["Lease-Based Outbox Poller + Two-Phase JDBC Idempotency"]
+        OUTBOX["Atomic-Claim Outbox Poller + Two-Phase JDBC Idempotency"]
     end
 
-    PG[("PostgreSQL 16 (Source of Truth + Flyway V1-V5 + Optional RLS)")]
-    KAFKA[["Apache Kafka (forge.pr-review.requested | forge.repo-index.requested + DLTs)"]]
-    REDIS[("Redis 7 (Cache + Atomic Lua Rate Limiter + SSE Tickets)")]
-    OBS["Micrometer + Prometheus + Grafana + OpenTelemetry"]
+    PG[("PostgreSQL 16 (Source of Truth + Flyway V1-V6 + Optional RLS)")]
+    KAFKA[["Apache Kafka (pr-review | pr-prediction | repo-index + DLTs)"]]
+    REDIS[("Redis 7 (Resilient Cache + Atomic Lua Rate Limiter + Fail-Closed SSE Tickets)")]
+    OBS["Micrometer + Prometheus + Grafana + OpenTelemetry + Structured JSON Logs"]
 
     Dev -->|"HTTPS / REST + Bearer JWT"| API
     Dev -->|"POST /stream/ticket -> GET /stream/events?ticket=..."| SSE
@@ -49,17 +49,24 @@ sequenceDiagram
     Client->>API: POST /api/v1/reviews (or Signed GitHub Webhook)
     API->>DB: Tx: Insert PR Review (QUEUED) + OutboxEvent + AuditLog
     API-->>Client: 202 Accepted (reviewId, status=QUEUED)
-    Outbox->>DB: Claim PENDING lease (locked_until)
-    Outbox->>Worker: Dispatch via Kafka (prod) or In-Process (local)
+    Outbox->>DB: Atomic per-row conditional claim (tryClaimEvent + locked_until)
+    Outbox->>Worker: Dispatch via Kafka (prod) or Virtual-Thread Local Bus (local) with X-Correlation-Id
     Worker->>DB: Two-Phase Idempotency Claim (processed_events IN_PROGRESS)
-    Worker->>SSE: Stage 1: INGESTING_DIFF (UnifiedDiffParser: ADDED/MODIFIED/DELETED/RENAMED + symbols)
-    Worker->>SSE: Stage 2: AST_IMPACT_ANALYSIS (JavaParser + TS/JS graph, cycles, blast radius)
-    Worker->>SSE: Stage 3: SECURITY_SCANNING (Secrets + Entropy + SAST + IaC + Offline SCA + Suppressions)
-    Worker->>SSE: Stage 4: COMPATIBILITY_AND_TESTS (API OpenAPI/Spring diff, Flyway DDL check, Static Test Selection NOT_EXECUTED)
-    Worker->>SSE: Stage 5: CHANGE_RISK_AND_AI (Deterministic Policy-as-Code PASS/WARN/BLOCK + AI Explanation)
-    Worker->>DB: Persist Risk Breakdown, Recommended Tests, Findings + Mark Idempotency COMPLETED
-    Worker->>SSE: Stage 6: COMPLETED
+    Worker->>SSE: Stage 1/8: QUEUED (Operation accepted & queued)
+    Worker->>SSE: Stage 2/8: INGESTING_DIFF (UnifiedDiffParser: ADDED/MODIFIED/DELETED/RENAMED + symbols)
+    Worker->>SSE: Stage 3/8: AST_IMPACT_ANALYSIS (JavaParser + TS/JS graph, cycles, blast radius)
+    Worker->>SSE: Stage 4/8: CONTRACT_AND_MIGRATION_ANALYSIS (OpenAPI/Spring diff + Flyway DDL check)
+    Worker->>SSE: Stage 5/8: SECURITY_SCANNING (Secrets + Entropy + SAST + IaC + Offline SCA + Suppressions)
+    Worker->>SSE: Stage 6/8: AI_CONTEXT_REVIEW (Prompt-Injection Quarantine + Contextual Findings)
+    Worker->>SSE: Stage 7/8: RISK_AND_TEST_SELECTION (Deterministic Policy-as-Code PASS/WARN/BLOCK + Static Test Selection NOT_EXECUTED)
+    Worker->>DB: Persist Risk Breakdown, Recommended Tests, Findings + Enqueue forge.pr-prediction.requested
+    Worker->>SSE: Stage 8/8: COMPLETED (with structured summary details; recoverable via GET /api/v1/stream/operations)
 ```
+
+## 2b. Real-Time SSE Processing Protocol & Recovery
+- Every backend pipeline (`PR_REVIEW` 8 stages, `PR_PREDICTION` 5 stages, `REPO_INDEX` 4 stages) emits structured `PipelineEvent` records carrying `eventId`, `operationId`, `correlationId`, monotonic `sequence`, `stage`, `stageLabel`, `status` (`STARTED` | `IN_PROGRESS` | `COMPLETED` | `FAILED`), `stageIndex`, `totalStages`, factual `message`, structured `details`, and `timestamp`.
+- `SseHubService` records every stage into a bounded per-tenant `OperationStatusSnapshot` ring buffer even when zero browser clients are attached.
+- On initial mount, browser refresh, or SSE reconnect, the frontend subscribes to `/api/v1/stream/events?ticket=...` and hydrates `/api/v1/stream/operations` so no stage transition is lost. Client state merges strictly by `eventId` deduplication and monotonic `sequence`, preventing duplicate rows, out-of-order regressions, or terminal state re-opening. Zero synthetic timers or fabricated percentages are used.
 
 ## 3. Database Schema Overview (Flyway V1–V6)
 - **V1 (`V1__initial_schema.sql`)**: Core tables `tenants`, `users`, `repositories`, `source_files`, `code_symbols`, `code_dependencies`, `pull_request_reviews`, `review_findings`, `security_findings`, `ci_builds`, `audit_logs`, `evaluation_runs`, `outbox_events`, `processed_events`.

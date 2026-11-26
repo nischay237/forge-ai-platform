@@ -4,7 +4,9 @@
 - **Threat:** Accidentally deploying FORGE to production with development JWT secrets, default encryption keys, default database passwords, or pre-seeded demo admin credentials.
 - **Controls:**
   - Profiles are strictly separated: `application.yml` (shared defaults, `forge.seed.enabled=false`), `application-local.yml`, `application-demo.yml`, `application-test.yml`, and `application-prod.yml`.
-  - **`ProductionSecurityValidator`** runs at startup under `prod` (and validates secret length/entropy everywhere) and aborts boot if `FORGE_JWT_SECRET` (< 32 bytes or known dev placeholder), `FORGE_ENCRYPTION_KEY` (missing or dev placeholder), `SPRING_DATASOURCE_PASSWORD` (weak/dev default), or `demo` / `forge.seed.enabled=true` is active in production.
+  - **`ProductionSecurityValidator`** runs at startup under `prod` (and non-local profiles) and aborts boot if `FORGE_JWT_SECRET` (< 32 bytes or dev placeholder), `FORGE_ENCRYPTION_KEY` (missing, invalid Base64/length, or dev placeholder), `SPRING_DATASOURCE_URL` (missing, H2, or `localhost`/`127.0.0.1`), `SPRING_DATASOURCE_USERNAME`/`PASSWORD` (missing or weak/dev default), `SPRING_DATA_REDIS_HOST`/`PASSWORD` (missing, localhost, or weak default), `SPRING_KAFKA_BOOTSTRAP_SERVERS` (missing or localhost), `FORGE_CORS_ORIGINS` (missing or wildcard `*`), or `demo` / `forge.seed.enabled=true` is active in production. `application-prod.yml` contains zero localhost infrastructure fallbacks.
+  - **`SecurityConfig`** enforces explicit HTTP security response headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`), restricts `/actuator/info`, `/actuator/prometheus`, and `/actuator/metrics/**` to `OWNER`/`ADMIN`, and disables Swagger UI by default in `prod`.
+  - GitHub Actions CI workflows pin all third-party actions to verified 40-character immutable commit SHAs and enforce `npm audit --omit=dev --audit-level=high` (0 HIGH/CRITICAL production frontend vulnerabilities).
   - **`DemoWorkspaceSeeder`** is gated by `@Profile("demo & !prod")` and `@ConditionalOnProperty(name="forge.seed.enabled", havingValue="true", matchIfMissing=false)`, never logs plaintext passwords, and requires an explicit operator password (`FORGE_DEMO_PASSWORD`).
   - `docker-compose.yml` binds stateful services exclusively to `127.0.0.1` and requires environment-supplied credentials via `.env` (documented in `.env.example`).
 
@@ -22,7 +24,7 @@
 - **Threat:** Stolen access/refresh tokens, replay after logout, brute-force password guessing, or privilege escalation by `VIEWER`/`REVIEWER` roles.
 - **Controls:**
   - **Access Tokens:** HS256 JWTs (>= 256-bit key) carrying `jti`, `iss`, `aud`, `ver` (`tokenVersion`), `tenantId`, and `role`. `JwtAuthenticationFilter` validates signature, issuer, audience, JTI revocation list (`TokenRevocationService`), user active status, and `tokenVersion` on every request.
-  - **Rotating Refresh Tokens:** Opaque CSPRNG tokens stored hashed (SHA-256) in `refresh_tokens` with `family_id`. `POST /api/v1/auth/refresh` rotates the token on each use. Reuse of an already-rotated token triggers **family-wide revocation in `Propagation.REQUIRES_NEW`** (`AuthLockoutService.revokeRefreshFamily`) so revocation commits even when HTTP 401 is returned.
+  - **Rotating Refresh Tokens:** Opaque CSPRNG tokens stored hashed (SHA-256) in `refresh_tokens` with `family_id`. `POST /api/v1/auth/refresh` acquires a row-level `PESSIMISTIC_WRITE` lock (`findByTokenHashForUpdate`) plus atomic compare-and-revoke (`revokeIfActive`) so concurrent refresh requests cannot double-mint tokens. Reuse of an already-rotated token triggers **family-wide revocation in `Propagation.REQUIRES_NEW`** (`AuthLockoutService.revokeRefreshFamily`) so revocation commits even when HTTP 401 is returned.
   - **Logout:** `POST /api/v1/auth/logout` revokes the access token `jti` until expiry and revokes the associated refresh token family.
   - **Brute-Force Lockout:** 5 consecutive failed logins lock the account for 15 minutes (`HTTP 423 ACCOUNT_LOCKED`), persisted via `REQUIRES_NEW` transaction (`AuthLockoutService`) alongside immutable audit entries.
   - **RBAC Matrix:**
@@ -36,7 +38,8 @@
 - **Controls:**
   - Query-parameter JWT authentication (`?token=`) is completely removed.
   - Clients exchange their `Authorization: Bearer` token via `POST /api/v1/stream/ticket` for a **single-use, 30-second opaque ticket** (`SseTicketService`).
-  - `GET /api/v1/stream/events?ticket=...` consumes the ticket atomically via `ForgeCacheService.consumeOnce()` (preventing replay), binds the emitter to the ticket's `tenantId`, and caps concurrent emitters at **20 per tenant** with 30-minute timeouts and `@PreDestroy` graceful shutdown.
+  - `GET /api/v1/stream/events?ticket=...` consumes the ticket atomically via `ForgeCacheService.consumeOnce()` (failing closed if Redis is unavailable to prevent replay), binds the emitter to the ticket's `tenantId`, and caps concurrent emitters at **20 per tenant** with 30-minute timeouts and `@PreDestroy` graceful shutdown.
+  - Recovery endpoints `GET /api/v1/stream/operations` and `GET /api/v1/stream/operations/{operationId}` require full Bearer JWT authentication and enforce strict `TenantContext` isolation (returning HTTP 404 across tenants).
 
 ## 5. GitHub Webhook Security
 - **Threat:** Forged webhooks, cross-tenant secret reuse, tenant enumeration, replay floods, or oversized payload DoS.
@@ -45,6 +48,7 @@
   - Constant-time HMAC-SHA256 verification (`MessageDigest.isEqual`) against `X-Hub-Signature-256`.
   - Uniform `401 Unauthorized` on unknown slugs or invalid signatures (prevents tenant slug enumeration).
   - Per-IP webhook rate limiting + replay defense combining `X-GitHub-Delivery` and payload SHA-256 hash.
+  - Incoming webhook requests exceeding **1 MiB** are rejected immediately with `HTTP 413 WEBHOOK_PAYLOAD_TOO_LARGE` before HMAC or JSON parsing.
   - Inline diff payloads inside webhooks are disabled in the `prod` profile; GitHub API diff downloads enforce path traversal rejection (`.` / `..`) and a 1 MB size cap.
 
 ## 6. Encryption at Rest & Key Rotation

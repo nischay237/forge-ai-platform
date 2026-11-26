@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { LiveProcessingPanel } from '../components/LiveProcessingPanel';
 import { Badge, Button, ErrorBanner, Panel, SkeletonBlock } from '../components/ui';
 import {
   mergeDecisionClasses,
@@ -231,6 +232,18 @@ export function ReviewDetailPage() {
           </button>
         </div>
       )}
+
+      {/* Real-Time Backend Pipeline Execution Timeline (with page-refresh snapshot recovery) */}
+      <LiveProcessingPanel
+        resourceId={reviewId}
+        eventTypes={['PR_REVIEW', 'PR_PREDICTION']}
+        collapseWhenCompleted={review.status === 'COMPLETED'}
+        onRetry={() => detail.refetch()}
+        completionAction={{
+          label: 'Inspect Predictive Evidence',
+          to: `/predictions?reviewId=${encodeURIComponent(reviewId)}`,
+        }}
+      />
 
       {/* Deterministic Change Risk Intelligence + AST Impact + Recommended Tests */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

@@ -113,9 +113,11 @@ public class CodeIntelligenceService implements DomainEventHandler {
                     repositoryJpaRepository.save(repo);
                 })
             );
-            sseHubService.publish(tenantId, PipelineEvent.of(
-                "REPO_INDEX", repositoryId, "FAILED", 100,
-                "Repository AST indexing failed: " + errorMsg
+            sseHubService.publish(tenantId, PipelineEvent.stage(
+                "REPO_INDEX", repositoryId, "FAILED",
+                "AST indexing failed", "FAILED", 4, 4,
+                "Repository AST indexing failed: " + errorMsg,
+                Map.of("error", errorMsg != null ? errorMsg : "indexing failure")
             ));
         } catch (Exception ignored) {
             // best effort status update
@@ -127,13 +129,22 @@ public class CodeIntelligenceService implements DomainEventHandler {
         RepositoryEntity repo = repositoryJpaRepository.findByIdAndTenantId(repositoryId, tenantId).orElse(null);
         if (repo == null) return;
 
-        sseHubService.publish(tenantId, PipelineEvent.of(
-            "REPO_INDEX", repositoryId, "PARSING_AST", 30,
-            "Parsing JavaParser & TypeScript/JS AST for " + repo.getFullName()
+        sseHubService.publish(tenantId, PipelineEvent.stage(
+            "REPO_INDEX", repositoryId, "LOADING_SOURCE_FILES",
+            "Loading repository source files", "STARTED", 1, 4,
+            "Loading tracked source files for " + repo.getFullName(),
+            Map.of("repository", repo.getFullName())
         ));
 
         List<SourceFileEntity> files = sourceFileJpaRepository
             .findByRepositoryIdAndTenantIdOrderByFilePathAsc(repositoryId, tenantId);
+
+        sseHubService.publish(tenantId, PipelineEvent.stage(
+            "REPO_INDEX", repositoryId, "PARSING_AST",
+            "Parsing Java & TypeScript/JS AST", "IN_PROGRESS", 2, 4,
+            "Parsing AST symbols and complexity across " + files.size() + " file(s) in " + repo.getFullName(),
+            Map.of("repository", repo.getFullName(), "fileCount", files.size())
+        ));
 
         codeSymbolRepository.deleteByRepositoryIdAndTenantId(repositoryId, tenantId);
         codeDependencyRepository.deleteByRepositoryIdAndTenantId(repositoryId, tenantId);
@@ -175,6 +186,13 @@ public class CodeIntelligenceService implements DomainEventHandler {
                 ));
             }
         }
+
+        sseHubService.publish(tenantId, PipelineEvent.stage(
+            "REPO_INDEX", repositoryId, "BUILDING_DEPENDENCY_GRAPH",
+            "Resolving dependency edges & cycles", "IN_PROGRESS", 3, 4,
+            "Resolving module dependency edges across " + symbolsToSave.size() + " extracted AST symbol(s)",
+            Map.of("fileCount", files.size(), "symbolCount", symbolsToSave.size())
+        ));
 
         List<CodeDependencyEntity> depsToSave = new ArrayList<>();
         Set<String> dedupEdges = new HashSet<>();
@@ -222,9 +240,16 @@ public class CodeIntelligenceService implements DomainEventHandler {
         repo.setLastIndexedAt(Instant.now());
         repositoryJpaRepository.save(repo);
 
-        sseHubService.publish(tenantId, PipelineEvent.of(
-            "REPO_INDEX", repositoryId, "COMPLETED", 100,
-            "Indexed " + files.size() + " files, " + symbolsToSave.size() + " symbols, " + depsToSave.size() + " dependencies"
+        sseHubService.publish(tenantId, PipelineEvent.stage(
+            "REPO_INDEX", repositoryId, "COMPLETED",
+            "AST index & dependency graph ready", "COMPLETED", 4, 4,
+            "Indexed " + files.size() + " files, " + symbolsToSave.size() + " symbols, " + depsToSave.size() + " dependency edges",
+            Map.of(
+                "repository", repo.getFullName(),
+                "files", files.size(),
+                "symbols", symbolsToSave.size(),
+                "dependencies", depsToSave.size()
+            )
         ));
 
         auditService.record(tenantId, "ast-worker@forge.dev", "SYSTEM",

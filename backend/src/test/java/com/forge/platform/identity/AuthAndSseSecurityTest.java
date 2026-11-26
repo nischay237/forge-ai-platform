@@ -13,8 +13,14 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -164,6 +170,58 @@ class AuthAndSseSecurityTest {
             .andExpect(status().isForbidden());
         mockMvc.perform(get("/api/v1/audit-logs").header("Authorization", "Bearer " + reviewerToken))
             .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void concurrentRefreshTokenRotationAllowsStrictlyOneWinnerAndSetsSecurityAndCorrelationHeaders() throws Exception {
+        String email = "concurrent-" + UUID.randomUUID().toString().substring(0, 8) + "@forge.test";
+        JsonNode reg = register("Concurrency Org", email, "SecurePass#2026");
+        String refreshToken = reg.path("refreshToken").asText();
+
+        // Verify correlation ID echo & hardened security response headers on health probe
+        var healthRes = mockMvc.perform(get("/actuator/health")
+                .header("X-Correlation-Id", "corr-test-1234"))
+            .andExpect(status().isOk())
+            .andReturn().getResponse();
+        assertThat(healthRes.getHeader("X-Correlation-Id")).isEqualTo("corr-test-1234");
+        assertThat(healthRes.getHeader("X-Content-Type-Options")).isEqualTo("nosniff");
+        assertThat(healthRes.getHeader("X-Frame-Options")).isEqualTo("DENY");
+
+        String payload = objectMapper.writeValueAsString(Map.of("refreshToken", refreshToken));
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<Integer> f1 = pool.submit(() -> {
+                ready.countDown();
+                start.await(5, TimeUnit.SECONDS);
+                return mockMvc.perform(post("/api/v1/auth/refresh")
+                        .header("X-Forwarded-For", "10.33.0.1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                    .andReturn().getResponse().getStatus();
+            });
+            Future<Integer> f2 = pool.submit(() -> {
+                ready.countDown();
+                start.await(5, TimeUnit.SECONDS);
+                return mockMvc.perform(post("/api/v1/auth/refresh")
+                        .header("X-Forwarded-For", "10.33.0.2")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                    .andReturn().getResponse().getStatus();
+            });
+
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+
+            List<Integer> statuses = List.of(f1.get(10, TimeUnit.SECONDS), f2.get(10, TimeUnit.SECONDS));
+            long okCount = statuses.stream().filter(s -> s == 200).count();
+            long rejectedCount = statuses.stream().filter(s -> s == 401).count();
+            assertThat(okCount).isEqualTo(1);
+            assertThat(rejectedCount).isEqualTo(1);
+        } finally {
+            pool.shutdownNow();
+        }
     }
 
     private JsonNode register(String workspace, String email, String password) throws Exception {

@@ -20,6 +20,7 @@ import {
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { api } from '../lib/api';
 import { useForgeStore } from '../lib/store';
+import { LiveProcessingPanel } from '../components/LiveProcessingPanel';
 import { Badge, Button, ErrorBanner, Panel, SkeletonBlock } from '../components/ui';
 import { formatRelativeTime, predictionRiskClasses, statusClasses } from '../lib/utils';
 
@@ -329,6 +330,16 @@ export function PredictiveIntelligencePage() {
             Dismiss
           </button>
         </div>
+      )}
+
+      {/* Real-Time Predictive Pipeline Execution Timeline */}
+      {selectedReviewId && (
+        <LiveProcessingPanel
+          resourceId={selectedReviewId}
+          eventTypes={['PR_PREDICTION']}
+          collapseWhenCompleted
+          onRetry={canMutate ? () => recomputeMutation.mutate(selectedReviewId) : undefined}
+        />
       )}
 
       {/* Honest Historical Data Availability Banner */}
@@ -1186,8 +1197,9 @@ export function PredictiveIntelligencePage() {
                 Chronological Held-Out Prediction Evaluation
               </h2>
               <p className="text-[11px] text-stone-500 mt-0.5">
-                Compares versioned predictions strictly against confirmed post-merge outcomes. Accuracy is never
-                invented when labelled samples are below the minimum threshold.
+                Compares earliest (pre-outcome) versioned predictions strictly against confirmed post-prediction outcomes
+                on the chronological held-out tail. Undefined class-imbalance ratios and insufficient-history categories
+                are intentionally omitted rather than fabricated.
               </p>
             </div>
           </div>
@@ -1209,33 +1221,63 @@ export function PredictiveIntelligencePage() {
                     <th className="py-2 pr-3">F1</th>
                     <th className="py-2 pr-3">FPR / FNR</th>
                     <th className="py-2 pr-3">Cal. Error</th>
-                    <th className="py-2">Notes</th>
+                    <th className="py-2">Methodology &amp; Notes</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#EFEFEA]">
-                  {ov.latestEvaluations.map((ev) => (
-                    <tr key={ev.id}>
-                      <td className="py-2 pr-3 font-mono font-medium text-[#111111]">{ev.category}</td>
-                      <td className="py-2 pr-3">
-                        <Badge className={predictionRiskClasses(ev.status === 'EVALUATED' ? 'LOW' : 'INSUFFICIENT_DATA')}>
-                          {ev.status}
-                        </Badge>
-                      </td>
-                      <td className="py-2 pr-3 font-mono">{ev.sampleSize}</td>
-                      <td className="py-2 pr-3 font-mono">{ev.precisionScore != null ? ev.precisionScore.toFixed(3) : '—'}</td>
-                      <td className="py-2 pr-3 font-mono">{ev.recallScore != null ? ev.recallScore.toFixed(3) : '—'}</td>
-                      <td className="py-2 pr-3 font-mono">{ev.f1Score != null ? ev.f1Score.toFixed(3) : '—'}</td>
-                      <td className="py-2 pr-3 font-mono">
-                        {ev.falsePositiveRate != null && ev.falseNegativeRate != null
-                          ? `${ev.falsePositiveRate.toFixed(2)} / ${ev.falseNegativeRate.toFixed(2)}`
-                          : '—'}
-                      </td>
-                      <td className="py-2 pr-3 font-mono">
-                        {ev.calibrationError != null ? ev.calibrationError.toFixed(3) : '—'}
-                      </td>
-                      <td className="py-2 text-[11px] text-stone-600">{ev.notes}</td>
-                    </tr>
-                  ))}
+                  {ov.latestEvaluations.map((ev) => {
+                    const comp = ev.baselineComparison || {};
+                    const imbalanceNote =
+                      typeof comp.classImbalanceWarning === 'string' ? comp.classImbalanceWarning : null;
+                    const excludedLeakage =
+                      typeof comp.excludedPrePredictionOutcomes === 'number'
+                        ? comp.excludedPrePredictionOutcomes
+                        : 0;
+                    const fprText = ev.falsePositiveRate != null ? ev.falsePositiveRate.toFixed(2) : '—';
+                    const fnrText = ev.falseNegativeRate != null ? ev.falseNegativeRate.toFixed(2) : '—';
+                    return (
+                      <tr key={ev.id}>
+                        <td className="py-2 pr-3 font-mono font-medium text-[#111111]">{ev.category}</td>
+                        <td className="py-2 pr-3">
+                          <Badge className={predictionRiskClasses(ev.status === 'EVALUATED' ? 'LOW' : 'INSUFFICIENT_DATA')}>
+                            {ev.status}
+                          </Badge>
+                        </td>
+                        <td className="py-2 pr-3 font-mono">
+                          {ev.sampleSize}
+                          <span className="text-[10px] text-stone-400"> ({ev.positiveOutcomes}+)</span>
+                        </td>
+                        <td className="py-2 pr-3 font-mono">{ev.precisionScore != null ? ev.precisionScore.toFixed(3) : '—'}</td>
+                        <td className="py-2 pr-3 font-mono">{ev.recallScore != null ? ev.recallScore.toFixed(3) : '—'}</td>
+                        <td className="py-2 pr-3 font-mono">{ev.f1Score != null ? ev.f1Score.toFixed(3) : '—'}</td>
+                        <td className="py-2 pr-3 font-mono">
+                          {ev.falsePositiveRate != null || ev.falseNegativeRate != null
+                            ? `${fprText} / ${fnrText}`
+                            : '—'}
+                        </td>
+                        <td className="py-2 pr-3 font-mono">
+                          {ev.calibrationError != null ? ev.calibrationError.toFixed(3) : '—'}
+                        </td>
+                        <td className="py-2 text-[11px] text-stone-600 space-y-1">
+                          <div>{ev.notes}</div>
+                          {(imbalanceNote || excludedLeakage > 0) && (
+                            <div className="flex flex-wrap gap-1.5 text-[10px] font-mono text-amber-800">
+                              {excludedLeakage > 0 && (
+                                <span className="px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200">
+                                  Anti-leakage: {excludedLeakage} pre-prediction outcome(s) excluded
+                                </span>
+                              )}
+                              {imbalanceNote && (
+                                <span className="px-1.5 py-0.5 rounded bg-stone-100 border border-stone-200 text-stone-700">
+                                  {imbalanceNote}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

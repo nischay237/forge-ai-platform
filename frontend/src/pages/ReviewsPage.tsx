@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { LiveProcessingPanel } from '../components/LiveProcessingPanel';
 import { Badge, Button, EmptyState, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
 import { formatRelativeTime, mergeDecisionClasses, severityClasses, statusClasses } from '../lib/utils';
 
@@ -106,6 +107,12 @@ export function ReviewsPage() {
             </Button>
           </div>
         }
+      />
+
+      <LiveProcessingPanel
+        eventTypes={['PR_REVIEW']}
+        collapseWhenCompleted
+        autoRecover={false}
       />
 
       {reviews.isError && (
