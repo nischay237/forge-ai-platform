@@ -1,4 +1,4 @@
-import React from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, Play } from 'lucide-react';
 import {
@@ -13,17 +13,19 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '../lib/api';
-import { Badge, Button, PageHeader, Panel, SkeletonBlock } from '../components/ui';
+import { Badge, Button, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
 import { formatRelativeTime, statusClasses } from '../lib/utils';
 
 export function AnalyticsEvalPage() {
+  const [selectedRunId, setSelectedRunId] = useState<string>('');
   const qc = useQueryClient();
   const overview = useQuery({ queryKey: ['overview'], queryFn: api.getOverview });
   const evals = useQuery({ queryKey: ['evaluations'], queryFn: api.listEvaluations });
 
   const runEvalMutation = useMutation({
     mutationFn: api.runEvaluation,
-    onSuccess: () => {
+    onSuccess: (created) => {
+      setSelectedRunId(created.id);
       qc.invalidateQueries({ queryKey: ['evaluations'] });
       qc.invalidateQueries({ queryKey: ['overview'] });
       qc.invalidateQueries({ queryKey: ['audit'] });
@@ -31,30 +33,42 @@ export function AnalyticsEvalPage() {
   });
 
   const data = overview.data;
-  const latestEval = evals.data?.[0];
+  const evalList = evals.data ?? [];
+  const activeEval = evalList.find((e) => e.id === selectedRunId) ?? evalList[0];
 
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Measured Telemetry & Reproducible AI Evaluation"
+        eyebrow="Measured Telemetry & Reproducible Deterministic Eval Harness"
         title="Analytics &"
-        accentWord="AI eval."
-        description="Every chart below is queried live from persisted PostgreSQL/H2 records. Execute the 8-case AI Review Evaluation Suite to reproduce precision, recall, F1, false-positive rate, and latency."
+        accentWord="evaluation."
+        description="Live workspace metrics queried from persisted records. Run the 12-case deterministic evaluation benchmark covering SAST, secrets, entropy, IaC, API compatibility, SQL migrations, and negative controls."
         actions={
           <Button onClick={() => runEvalMutation.mutate()} disabled={runEvalMutation.isPending}>
             <Play className="w-3.5 h-3.5" />
-            {runEvalMutation.isPending ? 'Running 8-Case Suite...' : 'Run Evaluation Benchmark'}
+            {runEvalMutation.isPending ? 'Running 12-Case Suite...' : 'Run Evaluation Benchmark'}
           </Button>
         }
       />
 
-      {/* Charts Grid */}
+      {overview.isError && (
+        <ErrorBanner
+          message={overview.error instanceof Error ? overview.error.message : 'Could not load analytics'}
+          onRetry={() => overview.refetch()}
+        />
+      )}
+      {runEvalMutation.isError && (
+        <ErrorBanner
+          message={runEvalMutation.error instanceof Error ? runEvalMutation.error.message : 'Evaluation run failed'}
+        />
+      )}
+
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
         <Panel className="p-5">
           <div className="mb-4">
             <h2 className="text-sm font-semibold text-[#111111]">PR Review Risk &amp; Latency Trend</h2>
             <p className="text-[11px] text-stone-500">
-              Real processing duration (ms) &amp; risk score across analyzed PRs
+              Dual-axis view: Risk Score (0–100, left) vs Processing Latency (ms, right)
             </p>
           </div>
           <div className="h-[240px]">
@@ -75,10 +89,20 @@ export function AnalyticsEvalPage() {
                     tickLine={false}
                   />
                   <YAxis
-                    tick={{ fill: '#78716C', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    yAxisId="risk"
+                    domain={[0, 100]}
+                    tick={{ fill: '#111111', fontSize: 11, fontFamily: 'JetBrains Mono' }}
                     axisLine={false}
                     tickLine={false}
-                    width={34}
+                    width={32}
+                  />
+                  <YAxis
+                    yAxisId="latency"
+                    orientation="right"
+                    tick={{ fill: '#059669', fontSize: 11, fontFamily: 'JetBrains Mono' }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={44}
                   />
                   <Tooltip
                     contentStyle={{
@@ -91,14 +115,16 @@ export function AnalyticsEvalPage() {
                     }}
                   />
                   <Area
+                    yAxisId="risk"
                     type="monotone"
                     dataKey="riskScore"
-                    name="Risk Score"
+                    name="Risk Score (/100)"
                     stroke="#111111"
                     fill="url(#riskFillLight)"
                     strokeWidth={2}
                   />
                   <Area
+                    yAxisId="latency"
                     type="monotone"
                     dataKey="processingMs"
                     name="Latency (ms)"
@@ -114,10 +140,10 @@ export function AnalyticsEvalPage() {
           </div>
           <div className="flex items-center gap-4 pt-3 border-t border-[#EFEFEA] text-[11px] font-mono text-stone-500">
             <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-0.5 bg-[#111111]" /> Risk Score
+              <span className="w-2.5 h-0.5 bg-[#111111]" /> Risk Score (left axis, 0–100)
             </span>
             <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-0.5 bg-[#059669]" /> Latency (ms)
+              <span className="w-2.5 h-0.5 bg-[#059669]" /> Latency ms (right axis)
             </span>
           </div>
         </Panel>
@@ -128,7 +154,7 @@ export function AnalyticsEvalPage() {
               Findings Distribution by Category
             </h2>
             <p className="text-[11px] text-stone-500">
-              Breakdown across Security, Bug, Performance, Architecture &amp; Test Coverage
+              Breakdown across Security, API Compatibility, DB Migrations, Bug, Performance &amp; Architecture
             </p>
           </div>
           <div className="h-[240px]">
@@ -167,48 +193,71 @@ export function AnalyticsEvalPage() {
             )}
           </div>
           <div className="pt-3 border-t border-[#EFEFEA] text-[11px] font-mono text-stone-500">
-            Computed from persisted PR review findings &amp; security scans
+            Computed directly from persisted workspace review findings
           </div>
         </Panel>
       </div>
 
-      {/* Reproducible AI Review Quality Evaluation Suite */}
       <Panel className="overflow-hidden">
         <div className="px-5 py-4 border-b border-[#EFEFEA] bg-[#FAFAF8] flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-semibold text-[#111111] flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-700" />
-              Reproducible AI Review Quality Benchmark
+              Deterministic Analysis Evaluation Suite ({activeEval?.datasetSize ?? 12} Cases)
             </h2>
             <p className="text-[11px] text-stone-500 mt-0.5 font-mono">
-              {latestEval
-                ? `Latest run: ${latestEval.promptVersion} · ${latestEval.modelUsed} · ${formatRelativeTime(latestEval.executedAt)}`
+              {activeEval
+                ? `Run: ${activeEval.promptVersion} · ${activeEval.modelUsed} · ${formatRelativeTime(activeEval.executedAt)}`
                 : 'Execute benchmark to measure Precision, Recall, F1 & False-Positive Rate'}
             </p>
           </div>
 
-          {latestEval && (
-            <div className="flex flex-wrap items-center gap-2 text-xs font-mono tabular-nums">
-              <Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">
-                Precision {(latestEval.precision * 100).toFixed(1)}%
-              </Badge>
-              <Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">
-                Recall {(latestEval.recall * 100).toFixed(1)}%
-              </Badge>
-              <Badge className="bg-[#111111] text-white border-[#111111]">
-                F1 {(latestEval.f1Score * 100).toFixed(1)}%
-              </Badge>
-              <Badge className="bg-white text-stone-700 border-[#DCDCD5]">
-                FPR {(latestEval.falsePositiveRate * 100).toFixed(1)}%
-              </Badge>
-              <Badge className="bg-white text-stone-700 border-[#DCDCD5]">
-                {latestEval.avgLatencyMs}ms avg
-              </Badge>
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {evalList.length > 1 && (
+              <select
+                aria-label="Select historical evaluation run"
+                value={activeEval?.id ?? ''}
+                onChange={(e) => setSelectedRunId(e.target.value)}
+                className="h-8 px-2.5 rounded-md bg-white border border-[#DCDCD5] text-xs font-mono text-[#111111]"
+              >
+                {evalList.map((run, idx) => (
+                  <option key={run.id} value={run.id}>
+                    Run #{evalList.length - idx} · F1 {(run.f1Score * 100).toFixed(0)}% ({formatRelativeTime(run.executedAt)})
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {activeEval && (
+              <div className="flex flex-wrap items-center gap-2 text-xs font-mono tabular-nums">
+                <Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">
+                  Precision {(activeEval.precision * 100).toFixed(1)}%
+                </Badge>
+                <Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">
+                  Recall {(activeEval.recall * 100).toFixed(1)}%
+                </Badge>
+                <Badge className="bg-[#111111] text-white border-[#111111]">
+                  F1 {(activeEval.f1Score * 100).toFixed(1)}%
+                </Badge>
+                <Badge className="bg-white text-stone-700 border-[#DCDCD5]">
+                  FPR {(activeEval.falsePositiveRate * 100).toFixed(1)}%
+                </Badge>
+                <Badge className="bg-white text-stone-700 border-[#DCDCD5]">
+                  {activeEval.avgLatencyMs}ms avg
+                </Badge>
+              </div>
+            )}
+          </div>
         </div>
 
-        {latestEval ? (
+        {evals.isError ? (
+          <div className="p-4">
+            <ErrorBanner
+              message={evals.error instanceof Error ? evals.error.message : 'Failed to load evaluation runs'}
+              onRetry={() => evals.refetch()}
+            />
+          </div>
+        ) : activeEval ? (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="border-b border-[#EFEFEA] bg-[#FAFAF8] text-[10.5px] font-mono uppercase text-stone-500">
@@ -222,7 +271,7 @@ export function AnalyticsEvalPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#EFEFEA]">
-                {latestEval.caseResults.map((c) => (
+                {activeEval.caseResults.map((c) => (
                   <tr key={c.caseId} className="hover:bg-[#FAFAF8]">
                     <td className="px-5 py-3 font-mono font-semibold text-[#111111]">{c.caseId}</td>
                     <td className="px-5 py-3 text-[#111111] font-medium">{c.name}</td>

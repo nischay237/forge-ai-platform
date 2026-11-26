@@ -26,16 +26,32 @@ public final class CodeIntelDtos {
         String repositoryId,
         String repositoryName,
         List<GraphNode> nodes,
-        List<GraphEdge> edges
-    ) {}
+        List<GraphEdge> edges,
+        List<List<String>> circularDependencies
+    ) {
+        public DependencyGraphResponse(
+            String repositoryId,
+            String repositoryName,
+            List<GraphNode> nodes,
+            List<GraphEdge> edges
+        ) {
+            this(repositoryId, repositoryName, nodes, edges, List.of());
+        }
+    }
 
     public record ImpactedNode(
         String nodeName,
         String filePath,
         int hopDistance,
         String relationship,
-        boolean isTest
-    ) {}
+        boolean isTest,
+        String impactReason
+    ) {
+        public ImpactedNode(String nodeName, String filePath, int hopDistance, String relationship, boolean isTest) {
+            this(nodeName, filePath, hopDistance, relationship, isTest,
+                hopDistance == 1 ? "Direct " + relationship + " dependent" : "Transitive (" + hopDistance + "-hop) dependent");
+        }
+    }
 
     public record ChangeImpactResponse(
         String repositoryId,
@@ -61,5 +77,28 @@ public final class CodeIntelDtos {
         String query,
         String synthesizedAnswer,
         List<SearchHit> hits
+    ) {}
+
+    public record ArchitectureDriftViolation(
+        String ruleId,
+        String severity,
+        String sourceNode,
+        String sourceFile,
+        String sourceLayer,
+        String targetNode,
+        String targetFile,
+        String targetLayer,
+        String dependencyType,
+        String explanation
+    ) {}
+
+    public record ArchitectureDriftResponse(
+        String repositoryId,
+        String repositoryName,
+        int totalEdgesAnalyzed,
+        int violationCount,
+        int cycleCount,
+        List<ArchitectureDriftViolation> violations,
+        List<List<String>> circularDependencies
     ) {}
 }

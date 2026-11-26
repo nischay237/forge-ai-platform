@@ -1,30 +1,35 @@
-# FORGE — AI Software Engineering Intelligence Platform (`AGENTS.md`)
+# FORGE — Engineering Contract & Architecture Rules (`AGENTS.md`)
 
-Persistent engineering contract and architecture rules for contributors and coding agents working in `forge-ai-platform`.
+Persistent engineering contract and architectural invariants for contributors and coding agents working in `forge-ai-platform`.
+
+## Core Positioning
+**"Understand the impact of every code change. Predict what could fail before it reaches production."**
+Deterministic analyzers, dependency graphs, and Policy-as-Code own `PASS` / `WARN` / `BLOCK` merge decisions. Predictive baselines provide advisory failure risk forecasts grounded in real historical data and must NEVER auto-block on uncertain historical signals or fabricate probabilities/accuracy.
 
 ## Architecture & Module Boundaries (Enforced by ArchUnit)
 
-FORGE is a **modular monolith** built on Java 21 LTS and Spring Boot 3.5 with asynchronous event processing via Transactional Outbox + Apache Kafka, Redis caching/rate limiting, PostgreSQL (+ pgvector) as source of truth, and a dark-first React + TypeScript frontend.
+FORGE is a **modular monolith** built on Java 21 LTS and Spring Boot 3.5 with Flyway V1–V6 migrations, Transactional Outbox + Apache Kafka, Redis caching/rate limiting, PostgreSQL 16 as source of truth, and a React 18 + TypeScript frontend.
 
 ### Backend Packages (`com.forge.platform`)
-- `common` — Shared base entities, `TenantContext`, exceptions, AES-256-GCM secret encryption, API error payloads. **Must not depend on any business module.**
-- `identity` — Authentication (JWT + BCrypt), Tenants, Users, RBAC (`OWNER`, `ADMIN`, `REVIEWER`, `VIEWER`), `JwtAuthenticationFilter`, `TenantContextFilter`.
-- `audit` — Immutable tenant-scoped audit log service and query API.
-- `messaging` — Transactional Outbox (`outbox_events`), Idempotent Consumer Deduplication (`processed_events`), Kafka producer/consumer + DLT (`!local`), Redis cache & sliding-window rate limiter (`!local`), and local profile in-process dispatcher/cache (`local`).
-- `sse` — Server-Sent Events hub broadcasting real-time review/indexing pipeline stages per tenant.
-- `repository` — GitHub App/OAuth/Webhook HMAC-SHA256 verification, repository connection, source snapshot ingestion.
-- `codeintel` — JavaParser AST analysis, multi-language symbol extraction, dependency graph builder, Change Impact Analysis, semantic/symbol search.
-- `security` — Secret scanner (Shannon entropy + curated high-precision token rules), SAST static rules (SQLi, SSRF, Path Traversal, Weak Crypto, Deserialization, Prompt Injection), dependency risk findings.
-- `review` — Unified diff parser, AST-informed context retrieval, AI PR Review Engine (Spring AI OpenAI + deterministic AST/rule hybrid with prompt-injection defense), Approve/Dismiss workflow, reproducible AI Evaluation Benchmark suite.
+- `common` — Base entities, `TenantContext`, exceptions, versioned AES-256-GCM encryption (`SecretCryptoService` with AAD + key rotation), `ProductionSecurityValidator`, API error payloads. **Must not depend on any business module.**
+- `identity` — Authentication (HS256 JWT with `jti`/`iss`/`aud`/`ver`, rotating `refresh_tokens` with family reuse revocation, `TokenRevocationService`, brute-force lockout via `AuthLockoutService`), Tenants, Users, RBAC (`OWNER`, `ADMIN`, `REVIEWER`, `VIEWER`), `JwtAuthenticationFilter`.
+- `audit` — Immutable tenant-scoped audit log service and RBAC-protected query API.
+- `messaging` — Lease-based Transactional Outbox (`outbox_events`), two-phase JDBC Idempotency (`processed_events`), Kafka producer/consumer with `ORIGINAL_TOPIC` DLT routing (`!local`), atomic Lua Redis rate limiter & cache (`!local`), and local in-process dispatcher/cache (`local`).
+- `sse` — Single-use SSE ticket issuance (`SseTicketService`), bounded per-tenant `SseHubService` (20 emitters/tenant, 30m TTL, `@PreDestroy` cleanup).
+- `repository` — Per-tenant CSPRNG webhook secrets, constant-time HMAC-SHA256 verification, replay protection, Resilience4j GitHub ingestion client, repository lifecycle.
+- `codeintel` — Java 21 `JavaParser` AST analyzer, `TypeScriptJsAnalyzer`, disambiguated dependency graph, DFS cycle detection, BFS Change Impact analysis, `ArchitectureDriftAnalyzer`. **Must not depend on `review` or `ci`.**
+- `security` — Multi-match secret scanner + Shannon entropy detector, SAST + IaC rules, `DependencyAndSbomService` (Maven/npm offline SCA + CycloneDX 1.5 SBOM), `SarifExportService` (SARIF 2.1.0), persistent `finding_suppressions`.
+- `review` — `UnifiedDiffParser`, `ApiCompatibilityAnalyzer`, `MigrationCompatibilityAnalyzer`, `TestSelectionService` (explicitly `NOT_EXECUTED`), deterministic `ChangeRiskEngine`, `PolicyService` / `PolicyController`, Resilience4j `LlmReviewClient`, `AiReviewEngine`, `PromptRegistry`, 12-case `ReviewEvaluationService`.
+- `prediction` — `HistoricalDataIngestionService` (idempotent API + GitHub `workflow_run`/`deployment_status` webhooks), `PrFeatureExtractor`, `BugRiskPredictor`, `TestFailurePredictor`, `OperationalRiskPredictor` (separate Incident vs Deployment/Rollback), `PerformanceRegressionAnalyzer` (static perf warnings), `EngineeringRiskAggregator` (7 deduplicated channels), `PredictionPipelineService` (`forge.pr-prediction.requested`), `PredictionEvaluationService` (chronological held-out validation), `PredictionController`. `common`, `audit`, and `codeintel` must NOT depend on `prediction`.
 - `ci` — CI build log ingestion, failure pattern classifier, root-cause diagnosis & remediation suggestions.
 - `analytics` — Live SQL/JPA aggregations over persisted reviews, findings, CI builds, latency, and repository health.
 
 ### Hard Engineering Rules
-1. **Strict Multi-Tenant Isolation:** Every business table includes `tenant_id`. Every repository query MUST scope by `TenantContext.requireTenantId()`. Cross-tenant access must return `404` or `403`.
-2. **PostgreSQL is Source of Truth:** Never store durable transactional state only in Redis or Kafka.
-3. **Transactional Outbox:** Publish asynchronous domain events by writing to `outbox_events` inside the same database transaction as the domain mutation.
-4. **Idempotency & Deduplication:** All webhook deliveries and async event consumers MUST check `processed_events` before processing.
-5. **Untrusted Input & Prompt-Injection Defense:** Treat PR diffs, code comments, commit messages, and CI logs as untrusted data. Never execute arbitrary repository code on the API server; sanitize & delimit untrusted content before LLM prompts.
-6. **Human-in-the-Loop Safety:** Never auto-publish PR comments or auto-apply code patches without explicit approval.
-7. **No Fake Metrics or Dead Controls:** Every dashboard metric, chart, graph node, and action button must reflect real persisted backend data.
-8. **Verify Before Claiming Done:** Run `./mvnw.cmd test` (including ArchUnit) and `npm run check` (`tsc`, `vitest`, `vite build`) before marking work complete.
+1. **Strict Multi-Tenant Isolation:** Every business table includes `tenant_id` and composite `(tenant_id, id)` keys. Every query MUST scope by `TenantContext.requireTenantId()`, never a client-supplied tenant header/body field. Background workers must explicitly propagate and clear `TenantContext`.
+2. **Fail-Fast Production Security:** Never embed default JWT secrets, encryption keys, webhook secrets, or demo credentials in production configs, Dockerfiles, README, or frontend source. `DemoWorkspaceSeeder` runs ONLY under `@Profile("demo & !prod")` with `forge.seed.enabled=true`.
+3. **No Tokens in URLs:** SSE authentication MUST use single-use tickets from `POST /api/v1/stream/ticket`; never accept JWTs in `?token=` query params.
+4. **Transactional Outbox & Two-Phase Idempotency:** Write domain mutations + `outbox_events` in the same transaction; claim-publish-finalize leases outside long DB locks; mark `processed_events` `IN_PROGRESS` -> `COMPLETED` and release claim on retryable failure.
+5. **Untrusted Input & Prompt-Injection Defense:** Never execute untrusted repository code on the API server. Quarantine `FORGE-PROMPT-001` lines, escape XML boundary tags, and separate `SystemMessage` from `UserMessage`.
+6. **Honest Evidence & HITL Safety:** Never claim unexecuted tests have passed; never claim `PASS` guarantees production safety; never auto-publish to GitHub without explicit approval.
+7. **Frontend Cache Hygiene:** Purge React Query cache and transient pipeline history on logout or tenant switch.
+8. **Verify Before Claiming Done:** Run `.\mvnw.cmd test` (backend + ArchUnit), `npm run typecheck`, `npm run test`, and `npm run build` (frontend) before committing.

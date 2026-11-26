@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -12,8 +12,8 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import { Badge, Button, EmptyState, PageHeader, Panel, SkeletonBlock } from '../components/ui';
-import { formatRelativeTime, severityClasses, statusClasses } from '../lib/utils';
+import { Badge, Button, EmptyState, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
+import { formatRelativeTime, mergeDecisionClasses, severityClasses, statusClasses } from '../lib/utils';
 
 const SAMPLE_DIFF_PRESET = `diff --git a/src/main/java/com/acme/ledger/SettlementService.java b/src/main/java/com/acme/ledger/SettlementService.java
 --- a/src/main/java/com/acme/ledger/SettlementService.java
@@ -90,10 +90,10 @@ export function ReviewsPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Live GitHub PR Scanner & Human Approval Queue"
+        eyebrow="Change Impact & Merge Risk Queue"
         title="Pull Request"
         accentWord="reviews."
-        description="Import any real GitHub Pull Request (or paste a diff). Forge fetches the real diff, scans for bugs & leaked secrets, and waits for your human approval before posting to GitHub."
+        description="Import a real GitHub Pull Request or submit a unified diff. FORGE computes AST blast radius, API/migration compatibility, security risks, recommended tests, and an explainable PASS/WARN/BLOCK verdict."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button onClick={() => setGithubOpen(true)}>
@@ -102,11 +102,18 @@ export function ReviewsPage() {
             </Button>
             <Button variant="secondary" onClick={() => setOpen(true)}>
               <Plus className="w-3.5 h-3.5" />
-              Paste Custom Diff
+              Analyze Custom Diff
             </Button>
           </div>
         }
       />
+
+      {reviews.isError && (
+        <ErrorBanner
+          message={reviews.error instanceof Error ? reviews.error.message : 'Could not load pull request reviews'}
+          onRetry={() => reviews.refetch()}
+        />
+      )}
 
       {reviews.isLoading ? (
         <div className="space-y-3">
@@ -117,7 +124,7 @@ export function ReviewsPage() {
         <EmptyState
           icon={GitPullRequest}
           title="No pull request reviews yet"
-          description="Trigger your first contextual PR review to inspect side-by-side Monaco diffs, AST blast radius, and patch suggestions."
+          description="Import a GitHub PR or submit a diff to inspect explainable risk factors, recommended tests, and Monaco side-by-side diffs."
           action={<Button onClick={() => setOpen(true)}>Analyze Pull Request</Button>}
         />
       ) : (
@@ -135,12 +142,19 @@ export function ReviewsPage() {
                       #{r.prNumber}
                     </span>
                     <h3 className="text-sm font-semibold text-[#111111]">{r.title}</h3>
-                    <Badge className={statusClasses(r.status)}>{r.status}</Badge>
-                    {r.publishedToGithub && (
-                      <Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">
-                        <CheckCircle2 className="w-3 h-3" /> Published
-                      </Badge>
+                    {r.mergeDecision && (
+                      <Badge className={mergeDecisionClasses(r.mergeDecision)}>{r.mergeDecision}</Badge>
                     )}
+                    <Badge className={statusClasses(r.status)}>{r.status}</Badge>
+                    {r.publishStatus === 'PUBLISHED_TO_GITHUB' ? (
+                      <Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">
+                        <CheckCircle2 className="w-3 h-3" /> Published to GitHub
+                      </Badge>
+                    ) : r.publishedToGithub ? (
+                      <Badge className="bg-stone-100 text-stone-700 border-stone-200">
+                        <CheckCircle2 className="w-3 h-3" /> Approved Locally
+                      </Badge>
+                    ) : null}
                   </div>
 
                   <p className="text-xs text-stone-600 line-clamp-1">{r.summary}</p>
@@ -176,9 +190,9 @@ export function ReviewsPage() {
                     <div className="text-[10px] font-mono uppercase text-stone-500">Risk</div>
                     <div
                       className={`text-sm font-mono font-semibold tabular-nums ${
-                        r.riskScore >= 70
+                        r.riskScore >= 65
                           ? 'text-red-700'
-                          : r.riskScore >= 40
+                          : r.riskScore > 25
                           ? 'text-amber-700'
                           : 'text-emerald-700'
                       }`}
@@ -218,26 +232,27 @@ export function ReviewsPage() {
               className="space-y-4"
             >
               <p className="text-xs text-stone-600 leading-relaxed">
-                Paste any real GitHub Pull Request link below. Forge will automatically connect the
-                repository, fetch the real code diff from GitHub API, detect bugs &amp; leaked
-                secrets, and let you approve comments to post back onto GitHub.
+                Paste any GitHub Pull Request URL. FORGE fetches the real unified diff via GitHub API,
+                runs AST impact, API/migration compatibility, and security analysis, and requires human
+                sign-off before publishing comments.
               </p>
 
               <div>
-                <label className="block text-xs font-medium text-stone-700 mb-1.5">
+                <label htmlFor="gh-pr-url" className="block text-xs font-medium text-stone-700 mb-1.5">
                   GitHub Pull Request URL
                 </label>
                 <input
+                  id="gh-pr-url"
                   required
                   value={githubPrUrl}
                   onChange={(e) => setGithubPrUrl(e.target.value)}
-                  placeholder="https://github.com/nischay237/your-repo/pull/1"
+                  placeholder="https://github.com/owner/repo/pull/1"
                   className="w-full h-10 px-3 rounded-md bg-[#FAFAF8] border border-[#DCDCD5] text-xs font-mono text-[#111111] focus:outline-none focus:border-[#111111]"
                 />
               </div>
 
               {importGithubMutation.isError && (
-                <div className="p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-700">
+                <div role="alert" className="p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-700">
                   {importGithubMutation.error instanceof Error
                     ? importGithubMutation.error.message
                     : 'Could not import PR from GitHub'}
@@ -288,8 +303,9 @@ export function ReviewsPage() {
             >
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="sm:col-span-2">
-                  <label className="block text-xs font-medium text-stone-700 mb-1">Repository</label>
+                  <label htmlFor="pr-repo" className="block text-xs font-medium text-stone-700 mb-1">Repository</label>
                   <select
+                    id="pr-repo"
                     required
                     value={repoId}
                     onChange={(e) => setRepoId(e.target.value)}
@@ -303,8 +319,9 @@ export function ReviewsPage() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-stone-700 mb-1">PR Number</label>
+                  <label htmlFor="pr-num" className="block text-xs font-medium text-stone-700 mb-1">PR Number</label>
                   <input
+                    id="pr-num"
                     required
                     type="number"
                     value={prNumber}
@@ -316,8 +333,9 @@ export function ReviewsPage() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-stone-700 mb-1">PR Title</label>
+                  <label htmlFor="pr-title" className="block text-xs font-medium text-stone-700 mb-1">PR Title</label>
                   <input
+                    id="pr-title"
                     required
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
@@ -325,10 +343,11 @@ export function ReviewsPage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-stone-700 mb-1">
+                  <label htmlFor="pr-branch" className="block text-xs font-medium text-stone-700 mb-1">
                     Source Branch
                   </label>
                   <input
+                    id="pr-branch"
                     required
                     value={sourceBranch}
                     onChange={(e) => setSourceBranch(e.target.value)}
@@ -338,10 +357,11 @@ export function ReviewsPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-stone-700 mb-1">
-                  Unified Git Diff (paste any Java/TS patch or use pre-loaded FinTech PR)
+                <label htmlFor="pr-diff" className="block text-xs font-medium text-stone-700 mb-1">
+                  Unified Git Diff (Java, TypeScript, OpenAPI YAML, SQL migration, or Dockerfile)
                 </label>
                 <textarea
+                  id="pr-diff"
                   required
                   rows={10}
                   value={rawDiff}
@@ -351,7 +371,7 @@ export function ReviewsPage() {
               </div>
 
               {triggerMutation.isError && (
-                <div className="p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-700">
+                <div role="alert" className="p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-700">
                   {triggerMutation.error instanceof Error
                     ? triggerMutation.error.message
                     : 'Failed to enqueue review'}

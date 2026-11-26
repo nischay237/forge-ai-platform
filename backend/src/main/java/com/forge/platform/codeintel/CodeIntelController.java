@@ -13,9 +13,14 @@ import java.util.List;
 public class CodeIntelController {
 
     private final CodeIntelligenceService codeIntelligenceService;
+    private final ArchitectureDriftAnalyzer architectureDriftAnalyzer;
 
-    public CodeIntelController(CodeIntelligenceService codeIntelligenceService) {
+    public CodeIntelController(
+        CodeIntelligenceService codeIntelligenceService,
+        ArchitectureDriftAnalyzer architectureDriftAnalyzer
+    ) {
         this.codeIntelligenceService = codeIntelligenceService;
+        this.architectureDriftAnalyzer = architectureDriftAnalyzer;
     }
 
     @GetMapping("/graph")
@@ -34,6 +39,11 @@ public class CodeIntelController {
         @RequestParam String target
     ) {
         return codeIntelligenceService.analyzeChangeImpact(repositoryId, target);
+    }
+
+    @GetMapping("/drift")
+    public CodeIntelDtos.ArchitectureDriftResponse architectureDrift(@PathVariable String repositoryId) {
+        return architectureDriftAnalyzer.analyzeRepository(repositoryId);
     }
 
     @GetMapping("/search")

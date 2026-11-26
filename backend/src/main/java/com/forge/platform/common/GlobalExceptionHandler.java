@@ -3,13 +3,17 @@ package com.forge.platform.common;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -55,6 +59,43 @@ public class GlobalExceptionHandler {
             HttpStatus.FORBIDDEN.value(),
             "ACCESS_DENIED",
             "Insufficient permissions for this action",
+            request.getRequestURI(),
+            Map.of()
+        ));
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiError> handleUnreadableBody(HttpMessageNotReadableException ex, HttpServletRequest request) {
+        return ResponseEntity.badRequest().body(new ApiError(
+            Instant.now(),
+            HttpStatus.BAD_REQUEST.value(),
+            "MALFORMED_REQUEST_BODY",
+            "Request body is missing or contains invalid JSON / field types",
+            request.getRequestURI(),
+            Map.of()
+        ));
+    }
+
+    @ExceptionHandler({MethodArgumentTypeMismatchException.class, MissingServletRequestParameterException.class})
+    public ResponseEntity<ApiError> handleBadParam(Exception ex, HttpServletRequest request) {
+        return ResponseEntity.badRequest().body(new ApiError(
+            Instant.now(),
+            HttpStatus.BAD_REQUEST.value(),
+            "INVALID_PARAMETER",
+            "Invalid or missing request parameter",
+            request.getRequestURI(),
+            Map.of()
+        ));
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiError> handleDataIntegrity(DataIntegrityViolationException ex, HttpServletRequest request) {
+        log.warn("Data integrity conflict at {}: {}", request.getRequestURI(), ex.getMostSpecificCause().getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(
+            Instant.now(),
+            HttpStatus.CONFLICT.value(),
+            "DATA_CONFLICT",
+            "Operation conflicted with an existing record or schema constraint",
             request.getRequestURI(),
             Map.of()
         ));

@@ -21,6 +21,14 @@ public final class AuthDtos {
         @NotBlank String password
     ) {}
 
+    public record RefreshRequest(
+        @NotBlank String refreshToken
+    ) {}
+
+    public record LogoutRequest(
+        String refreshToken
+    ) {}
+
     public record UserDto(
         String id,
         String tenantId,
@@ -46,7 +54,15 @@ public final class AuthDtos {
 
     public record AuthResponse(
         String accessToken,
+        String refreshToken,
         String tokenType,
+        long expiresInSeconds,
+        UserDto user,
+        TenantDto tenant,
+        String initialWebhookSecret
+    ) {}
+
+    public record SessionResponse(
         UserDto user,
         TenantDto tenant
     ) {}
@@ -65,5 +81,10 @@ public final class AuthDtos {
         Boolean requireApprovalBeforePublish,
         String newWebhookSecret,
         String newGithubToken
+    ) {}
+
+    public record WebhookSecretRotationResponse(
+        String webhookSecret,
+        TenantDto tenant
     ) {}
 }

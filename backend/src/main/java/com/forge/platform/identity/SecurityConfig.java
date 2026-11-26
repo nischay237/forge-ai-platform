@@ -29,13 +29,16 @@ public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final String allowedOrigins;
+    private final boolean swaggerEnabled;
 
     public SecurityConfig(
         JwtAuthenticationFilter jwtAuthenticationFilter,
-        @Value("${forge.cors.allowed-origins:http://localhost:5173,http://localhost:3000}") String allowedOrigins
+        @Value("${forge.cors.allowed-origins:http://localhost:5173,http://localhost:3000}") String allowedOrigins,
+        @Value("${springdoc.swagger-ui.enabled:true}") boolean swaggerEnabled
     ) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.allowedOrigins = allowedOrigins;
+        this.swaggerEnabled = swaggerEnabled;
     }
 
     @Bean
@@ -45,19 +48,32 @@ public class SecurityConfig {
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .exceptionHandling(eh -> eh.authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
-            .authorizeHttpRequests(auth -> auth
-                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
-                .requestMatchers(
+            .authorizeHttpRequests(auth -> {
+                auth.requestMatchers(HttpMethod.OPTIONS, "/**").permitAll();
+                auth.requestMatchers(
                     "/", "/index.html", "/assets/**", "/favicon.ico",
                     "/login", "/repositories", "/code-intel", "/reviews", "/reviews/**",
-                    "/security", "/ci", "/analytics", "/audit", "/settings"
-                ).permitAll()
-                .requestMatchers("/api/v1/auth/**").permitAll()
-                .requestMatchers("/api/v1/webhooks/**").permitAll()
-                .requestMatchers("/actuator/health", "/actuator/info", "/actuator/prometheus").permitAll()
-                .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
-                .anyRequest().authenticated()
-            )
+                    "/predictions", "/security", "/ci", "/analytics", "/audit", "/settings"
+                ).permitAll();
+                auth.requestMatchers(
+                    HttpMethod.POST,
+                    "/api/v1/auth/login",
+                    "/api/v1/auth/register",
+                    "/api/v1/auth/refresh"
+                ).permitAll();
+                auth.requestMatchers("/api/v1/webhooks/**").permitAll();
+                // SSE stream validates short-lived single-use ticket inside SseController (never JWT in URL)
+                auth.requestMatchers(HttpMethod.GET, "/api/v1/stream/events").permitAll();
+                auth.requestMatchers("/actuator/health").permitAll();
+                auth.requestMatchers("/actuator/info", "/actuator/prometheus", "/actuator/metrics/**")
+                    .hasAnyRole("OWNER", "ADMIN");
+                if (swaggerEnabled) {
+                    auth.requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll();
+                } else {
+                    auth.requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").denyAll();
+                }
+                auth.anyRequest().authenticated();
+            })
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
             .build();
     }
@@ -70,7 +86,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(Arrays.stream(allowedOrigins.split(",")).map(String::trim).toList());
+        config.setAllowedOrigins(Arrays.stream(allowedOrigins.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("X-RateLimit-Remaining", "X-Forge-Tenant"));

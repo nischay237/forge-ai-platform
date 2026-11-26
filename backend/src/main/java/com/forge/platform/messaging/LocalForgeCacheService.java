@@ -12,12 +12,18 @@ import java.util.concurrent.ConcurrentHashMap;
 @Profile("local")
 public class LocalForgeCacheService implements ForgeCacheService {
 
+    private static final int MAX_ENTRIES = 10_000;
+
     private record Entry(String value, Instant expiresAt) {}
 
     private final ConcurrentHashMap<String, Entry> store = new ConcurrentHashMap<>();
 
     @Override
     public void put(String key, String value, Duration ttl) {
+        if (store.size() >= MAX_ENTRIES) {
+            Instant now = Instant.now();
+            store.entrySet().removeIf(e -> now.isAfter(e.getValue().expiresAt()));
+        }
         store.put(key, new Entry(value, Instant.now().plus(ttl)));
     }
 
@@ -28,7 +34,16 @@ public class LocalForgeCacheService implements ForgeCacheService {
             return Optional.empty();
         }
         if (Instant.now().isAfter(entry.expiresAt())) {
-            store.remove(key);
+            store.remove(key, entry);
+            return Optional.empty();
+        }
+        return Optional.of(entry.value());
+    }
+
+    @Override
+    public Optional<String> consumeOnce(String key) {
+        Entry entry = store.remove(key);
+        if (entry == null || Instant.now().isAfter(entry.expiresAt())) {
             return Optional.empty();
         }
         return Optional.of(entry.value());

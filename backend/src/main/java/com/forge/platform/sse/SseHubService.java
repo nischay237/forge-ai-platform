@@ -1,5 +1,7 @@
 package com.forge.platform.sse;
 
+import com.forge.platform.common.RateLimitExceededException;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -15,14 +17,26 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class SseHubService {
 
     private static final Logger log = LoggerFactory.getLogger(SseHubService.class);
+    private static final int MAX_EMITTERS_PER_TENANT = 20;
+    private static final long EMITTER_TIMEOUT_MS = 30L * 60L * 1000L; // 30 minutes
+
     private final Map<String, List<SseEmitter>> emittersByTenant = new ConcurrentHashMap<>();
 
     public SseEmitter subscribe(String tenantId) {
-        SseEmitter emitter = new SseEmitter(0L);
         List<SseEmitter> list = emittersByTenant.computeIfAbsent(tenantId, k -> new CopyOnWriteArrayList<>());
+        if (list.size() >= MAX_EMITTERS_PER_TENANT) {
+            throw new RateLimitExceededException("Maximum concurrent live stream connections reached for this workspace.");
+        }
+
+        SseEmitter emitter = new SseEmitter(EMITTER_TIMEOUT_MS);
         list.add(emitter);
 
-        Runnable cleanup = () -> list.remove(emitter);
+        Runnable cleanup = () -> {
+            list.remove(emitter);
+            if (list.isEmpty()) {
+                emittersByTenant.remove(tenantId, list);
+            }
+        };
         emitter.onCompletion(cleanup);
         emitter.onTimeout(cleanup);
         emitter.onError(e -> cleanup.run());
@@ -32,7 +46,7 @@ public class SseHubService {
                 .name("connected")
                 .data(PipelineEvent.of("CONNECTED", tenantId, "CONNECTED", 100, "Subscribed to FORGE live pipeline stream")));
         } catch (Exception ex) {
-            list.remove(emitter);
+            cleanup.run();
         }
         return emitter;
     }
@@ -63,5 +77,20 @@ public class SseHubService {
                 }
             }
         });
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        emittersByTenant.values().forEach(emitters -> {
+            for (SseEmitter emitter : emitters) {
+                try {
+                    emitter.complete();
+                } catch (Exception ignored) {
+                    // best effort during graceful shutdown
+                }
+            }
+            emitters.clear();
+        });
+        emittersByTenant.clear();
     }
 }

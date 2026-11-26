@@ -49,6 +49,15 @@ public class PullRequestReviewEntity {
     @Column(name = "risk_score", nullable = false)
     private int riskScore;
 
+    @Column(name = "merge_decision", nullable = false)
+    private String mergeDecision = "WARN";
+
+    @Column(name = "risk_breakdown_json", columnDefinition = "TEXT")
+    private String riskBreakdownJson;
+
+    @Column(name = "recommended_tests_json", columnDefinition = "TEXT")
+    private String recommendedTestsJson;
+
     @Column(columnDefinition = "TEXT")
     private String summary;
 
@@ -75,6 +84,9 @@ public class PullRequestReviewEntity {
 
     @Column(name = "published_to_github", nullable = false)
     private boolean publishedToGithub;
+
+    @Column(name = "publish_status", nullable = false)
+    private String publishStatus = "NOT_PUBLISHED";
 
     @Column(name = "github_comment_url")
     private String githubCommentUrl;
@@ -106,6 +118,7 @@ public class PullRequestReviewEntity {
         r.status = "QUEUED";
         r.currentStage = "QUEUED";
         r.riskScore = 0;
+        r.mergeDecision = "WARN";
         r.rawDiff = rawDiff;
         r.promptVersion = promptVersion;
         r.modelUsed = "forge-ast-hybrid-v2";
@@ -113,6 +126,7 @@ public class PullRequestReviewEntity {
         r.estimatedCostUsd = BigDecimal.ZERO;
         r.processingMs = 0;
         r.publishedToGithub = false;
+        r.publishStatus = "NOT_PUBLISHED";
         r.createdAt = Instant.now();
         return r;
     }
@@ -132,6 +146,12 @@ public class PullRequestReviewEntity {
     public void setCurrentStage(String currentStage) { this.currentStage = currentStage; }
     public int getRiskScore() { return riskScore; }
     public void setRiskScore(int riskScore) { this.riskScore = riskScore; }
+    public String getMergeDecision() { return mergeDecision; }
+    public void setMergeDecision(String mergeDecision) { this.mergeDecision = mergeDecision; }
+    public String getRiskBreakdownJson() { return riskBreakdownJson; }
+    public void setRiskBreakdownJson(String riskBreakdownJson) { this.riskBreakdownJson = riskBreakdownJson; }
+    public String getRecommendedTestsJson() { return recommendedTestsJson; }
+    public void setRecommendedTestsJson(String recommendedTestsJson) { this.recommendedTestsJson = recommendedTestsJson; }
     public String getSummary() { return summary; }
     public void setSummary(String summary) { this.summary = summary; }
     public String getRawDiff() { return rawDiff; }
@@ -148,6 +168,8 @@ public class PullRequestReviewEntity {
     public void setProcessingMs(long processingMs) { this.processingMs = processingMs; }
     public boolean isPublishedToGithub() { return publishedToGithub; }
     public void setPublishedToGithub(boolean publishedToGithub) { this.publishedToGithub = publishedToGithub; }
+    public String getPublishStatus() { return publishStatus; }
+    public void setPublishStatus(String publishStatus) { this.publishStatus = publishStatus; }
     public String getGithubCommentUrl() { return githubCommentUrl; }
     public void setGithubCommentUrl(String githubCommentUrl) { this.githubCommentUrl = githubCommentUrl; }
     public Instant getCreatedAt() { return createdAt; }

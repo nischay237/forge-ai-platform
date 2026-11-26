@@ -9,6 +9,7 @@ import com.forge.platform.codeintel.CodeIntelligenceService;
 import com.forge.platform.common.ForgeException;
 import com.forge.platform.common.RateLimitExceededException;
 import com.forge.platform.common.ResourceNotFoundException;
+import com.forge.platform.common.SecretCryptoService;
 import com.forge.platform.common.TenantContext;
 import com.forge.platform.identity.AuthService;
 import com.forge.platform.identity.Tenant;
@@ -33,12 +34,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -62,14 +66,21 @@ public class ReviewPipelineService implements DomainEventHandler {
     private final TenantRepository tenantRepository;
     private final UnifiedDiffParser diffParser;
     private final CodeIntelligenceService codeIntelligenceService;
+    private final ApiCompatibilityAnalyzer apiCompatibilityAnalyzer;
+    private final MigrationCompatibilityAnalyzer migrationCompatibilityAnalyzer;
+    private final TestSelectionService testSelectionService;
+    private final ChangeRiskEngine changeRiskEngine;
+    private final PolicyService policyService;
     private final AiReviewEngine aiReviewEngine;
     private final SecurityService securityService;
+    private final SecretCryptoService cryptoService;
     private final OutboxService outboxService;
     private final IdempotencyService idempotencyService;
     private final RateLimiterService rateLimiterService;
     private final SseHubService sseHubService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transactionTemplate;
     private final Counter reviewsCompletedCounter;
     private final Timer reviewLatencyTimer;
 
@@ -83,14 +94,21 @@ public class ReviewPipelineService implements DomainEventHandler {
         TenantRepository tenantRepository,
         UnifiedDiffParser diffParser,
         CodeIntelligenceService codeIntelligenceService,
+        ApiCompatibilityAnalyzer apiCompatibilityAnalyzer,
+        MigrationCompatibilityAnalyzer migrationCompatibilityAnalyzer,
+        TestSelectionService testSelectionService,
+        ChangeRiskEngine changeRiskEngine,
+        PolicyService policyService,
         AiReviewEngine aiReviewEngine,
         SecurityService securityService,
+        SecretCryptoService cryptoService,
         OutboxService outboxService,
         IdempotencyService idempotencyService,
         RateLimiterService rateLimiterService,
         SseHubService sseHubService,
         AuditService auditService,
         ObjectMapper objectMapper,
+        PlatformTransactionManager transactionManager,
         MeterRegistry meterRegistry
     ) {
         this.reviewRepository = reviewRepository;
@@ -102,14 +120,21 @@ public class ReviewPipelineService implements DomainEventHandler {
         this.tenantRepository = tenantRepository;
         this.diffParser = diffParser;
         this.codeIntelligenceService = codeIntelligenceService;
+        this.apiCompatibilityAnalyzer = apiCompatibilityAnalyzer;
+        this.migrationCompatibilityAnalyzer = migrationCompatibilityAnalyzer;
+        this.testSelectionService = testSelectionService;
+        this.changeRiskEngine = changeRiskEngine;
+        this.policyService = policyService;
         this.aiReviewEngine = aiReviewEngine;
         this.securityService = securityService;
+        this.cryptoService = cryptoService;
         this.outboxService = outboxService;
         this.idempotencyService = idempotencyService;
         this.rateLimiterService = rateLimiterService;
         this.sseHubService = sseHubService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.reviewsCompletedCounter = Counter.builder("forge.reviews.completed").register(meterRegistry);
         this.reviewLatencyTimer = Timer.builder("forge.reviews.duration").register(meterRegistry);
     }
@@ -239,16 +264,43 @@ public class ReviewPipelineService implements DomainEventHandler {
 
     @Override
     public void handle(String eventId, String tenantId, String payload) {
-        if (!idempotencyService.tryClaimEvent("pr-review:" + eventId, tenantId, "PR_REVIEW_REQUESTED")) {
+        String claimKey = "pr-review:" + eventId;
+        if (!idempotencyService.tryClaimEvent(claimKey, tenantId, "PR_REVIEW_REQUESTED")) {
             log.info("Skipping duplicate PR review event {}", eventId);
             return;
         }
+        String reviewId = "";
         try {
             JsonNode node = objectMapper.readTree(payload);
-            String reviewId = node.path("reviewId").asText();
-            executeReviewPipeline(tenantId, reviewId, true);
+            reviewId = node.path("reviewId").asText();
+            final String targetReviewId = reviewId;
+            transactionTemplate.executeWithoutResult(status -> executeReviewPipeline(tenantId, targetReviewId, true));
+            idempotencyService.markCompleted(claimKey);
         } catch (Exception ex) {
+            idempotencyService.releaseClaim(claimKey);
+            markReviewFailed(tenantId, reviewId, ex.getMessage());
             log.error("Async PR review worker failed for event {}: {}", eventId, ex.getMessage(), ex);
+            throw new IllegalStateException("PR review pipeline failed for event " + eventId, ex);
+        }
+    }
+
+    private void markReviewFailed(String tenantId, String reviewId, String reason) {
+        if (reviewId == null || reviewId.isBlank()) return;
+        try {
+            transactionTemplate.executeWithoutResult(status ->
+                reviewRepository.findByIdAndTenantId(reviewId, tenantId).ifPresent(review -> {
+                    review.setStatus("FAILED");
+                    review.setCurrentStage("FAILED");
+                    review.setSummary("Review pipeline failed: " + reason);
+                    reviewRepository.save(review);
+                })
+            );
+            sseHubService.publish(tenantId, PipelineEvent.of(
+                "PR_REVIEW", reviewId, "FAILED", 100,
+                "Review pipeline encountered an error and will retry if eligible"
+            ));
+        } catch (Exception ignored) {
+            // best effort status update
         }
     }
 
@@ -264,20 +316,20 @@ public class ReviewPipelineService implements DomainEventHandler {
 
         if (emitLiveProgress) {
             sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_REVIEW", reviewId, "INGESTING_DIFF", 22,
-                "Parsing unified diff hunks for PR #" + review.getPrNumber()
+                "PR_REVIEW", reviewId, "INGESTING_DIFF", 18,
+                "Parsing unified diff hunks & changed symbols for PR #" + review.getPrNumber()
             ));
         }
 
         List<UnifiedDiffParser.ParsedDiffFile> parsedFiles = diffParser.parse(review.getRawDiff());
 
-        // Stage 2: AST Change Impact Analysis
+        // Stage 2: AST Dependency Change Impact Analysis
         review.setCurrentStage("AST_IMPACT_ANALYSIS");
         reviewRepository.save(review);
         if (emitLiveProgress) {
             sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_REVIEW", reviewId, "AST_IMPACT_ANALYSIS", 46,
-                "Computing JavaParser AST dependency blast radius across " + parsedFiles.size() + " changed files"
+                "PR_REVIEW", reviewId, "AST_IMPACT_ANALYSIS", 36,
+                "Computing JavaParser & TS/JS AST dependency blast radius across " + parsedFiles.size() + " changed files"
             ));
         }
 
@@ -292,13 +344,25 @@ public class ReviewPipelineService implements DomainEventHandler {
             }
         }
 
-        // Stage 3 & 4: Security Scanners + Contextual AI Review Engine
+        // Stage 3: Deterministic API & Database Migration Compatibility Analysis
+        review.setCurrentStage("CONTRACT_AND_MIGRATION_ANALYSIS");
+        reviewRepository.save(review);
+        if (emitLiveProgress) {
+            sseHubService.publish(tenantId, PipelineEvent.of(
+                "PR_REVIEW", reviewId, "CONTRACT_AND_MIGRATION_ANALYSIS", 52,
+                "Checking OpenAPI / Spring REST contract compatibility & SQL migration safety"
+            ));
+        }
+        List<AiReviewEngine.FindingProposal> apiFindings = apiCompatibilityAnalyzer.analyze(parsedFiles);
+        List<AiReviewEngine.FindingProposal> migrationFindings = migrationCompatibilityAnalyzer.analyze(parsedFiles);
+
+        // Stage 4: Security Scanner + Static Defect Engine + Optional AI Contextual Enrichment
         review.setCurrentStage("SECURITY_SCANNING");
         reviewRepository.save(review);
         if (emitLiveProgress) {
             sseHubService.publish(tenantId, PipelineEvent.of(
                 "PR_REVIEW", reviewId, "SECURITY_SCANNING", 68,
-                "Running Gitleaks secret scanner, Semgrep SAST rules & prompt-injection guard"
+                "Running secret entropy/pattern scanner, SAST rules & prompt-injection guard"
             ));
         }
 
@@ -306,19 +370,46 @@ public class ReviewPipelineService implements DomainEventHandler {
         reviewRepository.save(review);
         if (emitLiveProgress) {
             sseHubService.publish(tenantId, PipelineEvent.of(
-                "PR_REVIEW", reviewId, "AI_CONTEXT_REVIEW", 86,
-                "Synthesizing contextual findings & patch suggestions (" + review.getPromptVersion() + ")"
+                "PR_REVIEW", reviewId, "AI_CONTEXT_REVIEW", 80,
+                "Synthesizing contextual explanations & patch suggestions (" + review.getPromptVersion() + ")"
             ));
         }
 
-        AiReviewEngine.ReviewOutput output = aiReviewEngine.analyzeDiff(
-            review.getTitle(), parsedFiles, impacts, review.getPromptVersion()
+        String tenantAiProvider = tenantRepository.findById(tenantId)
+            .map(Tenant::getAiProvider)
+            .orElse("HYBRID");
+
+        AiReviewEngine.ReviewOutput aiOutput = aiReviewEngine.analyzeDiff(
+            review.getTitle(), parsedFiles, impacts, review.getPromptVersion(), tenantAiProvider
         );
 
-        // Persist structured review findings
+        // Merge deterministic API + Migration findings with Security/Static/AI findings cleanly
+        List<AiReviewEngine.FindingProposal> allProposals = mergeAllProposals(
+            aiOutput.findings(), apiFindings, migrationFindings
+        );
+
+        // Stage 5: Intelligent Test Selection (static, never claimed executed) + Deterministic Change Risk Engine
+        review.setCurrentStage("RISK_AND_TEST_SELECTION");
+        reviewRepository.save(review);
+        if (emitLiveProgress) {
+            sseHubService.publish(tenantId, PipelineEvent.of(
+                "PR_REVIEW", reviewId, "RISK_AND_TEST_SELECTION", 92,
+                "Evaluating Policy-as-Code merge decision (PASS/WARN/BLOCK) & impacted test selection"
+            ));
+        }
+
+        TestSelectionService.TestSelectionPlan testPlan = testSelectionService.selectTests(
+            tenantId, review.getRepositoryId(), parsedFiles, impacts
+        );
+        ChangeRiskPolicyEntity policy = policyService.resolveEffectivePolicy(tenantId, review.getRepositoryId());
+        ChangeRiskEngine.ChangeRiskAssessment riskAssessment = changeRiskEngine.evaluate(
+            parsedFiles, allProposals, impacts, testPlan, policy
+        );
+
+        // Persist structured review findings with stable content-anchored fingerprints
         List<ReviewFindingEntity> savedFindings = new ArrayList<>();
-        for (var proposal : output.findings()) {
-            savedFindings.add(findingRepository.save(ReviewFindingEntity.create(
+        for (var proposal : allProposals) {
+            ReviewFindingEntity entity = ReviewFindingEntity.create(
                 tenantId,
                 review.getId(),
                 proposal.filePath(),
@@ -331,44 +422,62 @@ public class ReviewPipelineService implements DomainEventHandler {
                 proposal.explanation(),
                 proposal.evidence(),
                 proposal.suggestedPatch()
-            )));
+            );
+            entity.setFingerprint(computeFindingFingerprint(proposal.filePath(), proposal.ruleId(), proposal.evidence()));
+            savedFindings.add(findingRepository.save(entity));
         }
 
         // Persist security findings into Security Center
-        if (!output.securityIssues().isEmpty()) {
-            securityService.recordFindingsForReview(tenantId, review.getRepositoryId(), review.getId(), output.securityIssues());
+        if (!aiOutput.securityIssues().isEmpty()) {
+            securityService.recordFindingsForReview(tenantId, review.getRepositoryId(), review.getId(), aiOutput.securityIssues());
         }
 
         long elapsedMs = Math.max(45L, (System.nanoTime() - startNanos) / 1_000_000L);
         reviewLatencyTimer.record(Duration.ofMillis(elapsedMs));
         reviewsCompletedCounter.increment();
 
-        try {
-            review.setImpactedSymbolsJson(objectMapper.writeValueAsString(impacts));
-        } catch (Exception ignored) {
-            review.setImpactedSymbolsJson("[]");
-        }
+        review.setImpactedSymbolsJson(writeJsonSafe(impacts, "[]"));
+        review.setRiskBreakdownJson(writeJsonSafe(riskAssessment, "{}"));
+        review.setRecommendedTestsJson(writeJsonSafe(testPlan, "{}"));
         review.setStatus("COMPLETED");
         review.setCurrentStage("COMPLETED");
-        review.setRiskScore(output.riskScore());
-        review.setSummary(output.summary());
-        review.setModelUsed(output.modelUsed());
-        review.setTokensUsed(output.tokensUsed());
-        review.setEstimatedCostUsd(output.estimatedCostUsd());
+        review.setRiskScore(riskAssessment.riskScore());
+        review.setMergeDecision(riskAssessment.mergeDecision());
+        review.setSummary(riskAssessment.decisionSummary());
+        review.setModelUsed(aiOutput.modelUsed());
+        review.setTokensUsed(aiOutput.tokensUsed());
+        review.setEstimatedCostUsd(aiOutput.estimatedCostUsd());
         review.setProcessingMs(elapsedMs);
         review.setCompletedAt(Instant.now());
         reviewRepository.save(review);
 
+        // Enqueue non-blocking async predictive risk evaluation via Transactional Outbox
+        outboxService.enqueue(
+            tenantId,
+            "PR_PREDICTION",
+            review.getId(),
+            "PR_PREDICTION_REQUESTED",
+            ForgeTopics.PR_PREDICTION_REQUESTED,
+            Map.of(
+                "eventId", "pr-pred-" + review.getId() + "-" + review.getCommitSha(),
+                "tenantId", tenantId,
+                "reviewId", review.getId()
+            )
+        );
+
         auditService.record(tenantId, "review-worker@forge.dev", "SYSTEM",
             "PR_REVIEW_COMPLETED", "PR_REVIEW", review.getId(),
-            "Completed PR #" + review.getPrNumber() + " review: " + savedFindings.size()
-                + " findings, risk=" + output.riskScore() + "/100, latency=" + elapsedMs + "ms",
+            "Completed PR #" + review.getPrNumber() + " review: decision=" + riskAssessment.mergeDecision()
+                + ", findings=" + savedFindings.size()
+                + ", risk=" + riskAssessment.riskScore() + "/100, selectedTests=" + testPlan.recommendedCount()
+                + ", latency=" + elapsedMs + "ms",
             "worker");
 
         if (emitLiveProgress) {
             sseHubService.publish(tenantId, PipelineEvent.of(
                 "PR_REVIEW", reviewId, "COMPLETED", 100,
-                "Review complete: " + savedFindings.size() + " findings detected (Risk " + output.riskScore() + "/100)"
+                "Review complete [" + riskAssessment.mergeDecision() + "]: " + savedFindings.size()
+                    + " findings (Risk " + riskAssessment.riskScore() + "/100)"
             ));
         }
 
@@ -414,11 +523,13 @@ public class ReviewPipelineService implements DomainEventHandler {
         List<ReviewDtos.DiffFileView> files = diffParser.parse(review.getRawDiff()).stream()
             .map(f -> new ReviewDtos.DiffFileView(
                 f.filePath(),
+                f.changeType(),
                 RepositoryService.detectLanguage(f.filePath()),
                 f.originalContent(),
                 f.modifiedContent(),
                 f.addedLines().size(),
-                f.removedLines().size()
+                f.removedLines().size(),
+                f.changedSymbols()
             ))
             .toList();
 
@@ -432,7 +543,32 @@ public class ReviewPipelineService implements DomainEventHandler {
             }
         }
 
-        return new ReviewDtos.ReviewDetailDto(toSummaryDto(review, repoName, findings), files, findings, impacts);
+        ChangeRiskEngine.ChangeRiskAssessment riskAssessment = null;
+        if (review.getRiskBreakdownJson() != null && !review.getRiskBreakdownJson().isBlank()) {
+            try {
+                riskAssessment = objectMapper.readValue(review.getRiskBreakdownJson(), ChangeRiskEngine.ChangeRiskAssessment.class);
+            } catch (Exception ignored) {
+                riskAssessment = null;
+            }
+        }
+
+        TestSelectionService.TestSelectionPlan testPlan = null;
+        if (review.getRecommendedTestsJson() != null && !review.getRecommendedTestsJson().isBlank()) {
+            try {
+                testPlan = objectMapper.readValue(review.getRecommendedTestsJson(), TestSelectionService.TestSelectionPlan.class);
+            } catch (Exception ignored) {
+                testPlan = null;
+            }
+        }
+
+        return new ReviewDtos.ReviewDetailDto(
+            toSummaryDto(review, repoName, findings),
+            files,
+            findings,
+            impacts,
+            riskAssessment,
+            testPlan
+        );
     }
 
     @Transactional
@@ -489,20 +625,54 @@ public class ReviewPipelineService implements DomainEventHandler {
                 repo.getOwner(), repo.getName(), review.getPrNumber(), markdown, githubToken
             );
             review.setGithubCommentUrl(liveCommentUrl);
+            review.setPublishedToGithub(true);
+            review.setPublishStatus("PUBLISHED_TO_GITHUB");
+        } else {
+            review.setPublishedToGithub(true);
+            review.setPublishStatus("APPROVED_LOCALLY");
         }
-
-        review.setPublishedToGithub(true);
         reviewRepository.save(review);
 
         String auditMsg = liveCommentUrl != null && !liveCommentUrl.isBlank()
             ? "Posted " + approvedCount + " human-approved review comments LIVE to GitHub PR #"
                 + review.getPrNumber() + " (" + liveCommentUrl + ")"
-            : "Published " + approvedCount + " human-approved review comments for PR #"
-                + review.getPrNumber() + " (local workspace audit — add GitHub Token in Settings to post live)";
+            : "Approved " + approvedCount + " review comments locally for PR #"
+                + review.getPrNumber() + " (add a workspace GitHub Token in Settings to post live to GitHub)";
 
         auditService.recordCurrent("PR_REVIEW_PUBLISHED_TO_GITHUB", "PR_REVIEW", review.getId(), auditMsg);
 
         return toSummaryDto(review, repoName, findings);
+    }
+
+    private List<AiReviewEngine.FindingProposal> mergeAllProposals(
+        List<AiReviewEngine.FindingProposal> base,
+        List<AiReviewEngine.FindingProposal> apiFindings,
+        List<AiReviewEngine.FindingProposal> migrationFindings
+    ) {
+        List<AiReviewEngine.FindingProposal> merged = new ArrayList<>();
+        Set<String> keys = new LinkedHashSet<>();
+        for (List<AiReviewEngine.FindingProposal> list : List.of(apiFindings, migrationFindings, base)) {
+            for (var f : list) {
+                String key = f.filePath() + ":" + f.lineNumber() + ":" + f.ruleId();
+                if (keys.add(key)) {
+                    merged.add(f);
+                }
+            }
+        }
+        return merged;
+    }
+
+    private String computeFindingFingerprint(String filePath, String ruleId, String evidence) {
+        String normalized = (evidence == null ? "" : evidence).replaceAll("\\s+", " ").trim();
+        return cryptoService.sha256Hex(filePath + "|" + ruleId + "|" + normalized);
+    }
+
+    private String writeJsonSafe(Object obj, String fallback) {
+        try {
+            return objectMapper.writeValueAsString(obj);
+        } catch (Exception ex) {
+            return fallback;
+        }
     }
 
     private String formatGithubReviewMarkdown(
@@ -511,32 +681,28 @@ public class ReviewPipelineService implements DomainEventHandler {
         String reviewerEmail
     ) {
         StringBuilder sb = new StringBuilder();
-        sb.append("## 🛡️ FORGE Automated Code Review — PR #").append(review.getPrNumber()).append("\n\n");
-        sb.append("**Risk Score:** `").append(review.getRiskScore()).append("/100`  |  ")
+        sb.append("## FORGE Change Impact & Risk Review — PR #").append(review.getPrNumber()).append("\n\n");
+        sb.append("**Merge Recommendation:** `").append(review.getMergeDecision()).append("`  |  ")
+          .append("**Risk Score:** `").append(review.getRiskScore()).append("/100`  |  ")
           .append("**Approved Findings:** `").append(approvedFindings.size()).append("`  |  ")
           .append("**Reviewed By:** `").append(reviewerEmail).append("`\n\n");
 
         if (approvedFindings.isEmpty()) {
-            sb.append("✅ All security, secret-scanning, and static checks passed cleanly.\n");
+            sb.append("No configured blocking security, contract, migration, or static issues were flagged.\n");
+            sb.append("> *Note: PASS indicates no configured blocking rules triggered; it is not a guarantee of production safety.*\n");
         } else {
             int idx = 1;
             for (ReviewFindingEntity f : approvedFindings) {
-                String badge = switch (f.getSeverity()) {
-                    case "CRITICAL" -> "🔴 CRITICAL";
-                    case "HIGH" -> "🟠 HIGH";
-                    case "MEDIUM" -> "🟡 MEDIUM";
-                    default -> "🔵 LOW";
-                };
-                sb.append("### ").append(idx++).append(". ").append(badge)
-                  .append(" — ").append(f.getTitle()).append("\n");
+                sb.append("### ").append(idx++).append(". [").append(f.getSeverity()).append("] ")
+                  .append(f.getTitle()).append("\n");
                 sb.append("- **Location:** `").append(f.getFilePath()).append(":").append(f.getLineNumber())
                   .append("` (`").append(f.getRuleId()).append("`)\n");
                 sb.append("- **Why it matters:** ").append(f.getExplanation()).append("\n");
                 if (f.getEvidence() != null && !f.getEvidence().isBlank()) {
-                    sb.append("- **Detected code:** `").append(f.getEvidence().replace("`", "'")).append("`\n");
+                    sb.append("- **Evidence:** `").append(f.getEvidence().replace("`", "'")).append("`\n");
                 }
                 if (f.getSuggestedPatch() != null && !f.getSuggestedPatch().isBlank()) {
-                    sb.append("\n**Suggested fix:**\n```java\n")
+                    sb.append("\n**Suggested fix:**\n```\n")
                       .append(f.getSuggestedPatch())
                       .append("\n```\n");
                 }
@@ -565,6 +731,7 @@ public class ReviewPipelineService implements DomainEventHandler {
             r.getStatus(),
             r.getCurrentStage(),
             r.getRiskScore(),
+            r.getMergeDecision(),
             r.getSummary(),
             r.getPromptVersion(),
             r.getModelUsed(),
@@ -572,6 +739,7 @@ public class ReviewPipelineService implements DomainEventHandler {
             r.getEstimatedCostUsd(),
             r.getProcessingMs(),
             r.isPublishedToGithub(),
+            r.getPublishStatus(),
             r.getGithubCommentUrl(),
             findings.size(),
             critical,

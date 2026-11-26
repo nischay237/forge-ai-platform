@@ -24,6 +24,7 @@ public class GithubIngestionClient {
     private static final Logger log = LoggerFactory.getLogger(GithubIngestionClient.class);
     private static final int MAX_FILES_TO_FETCH = 18;
     private static final int MAX_FILE_BYTES = 45_000;
+    private static final int MAX_DIFF_BYTES = 1_000_000;
 
     public record PullRequestSnapshot(
         String owner,
@@ -113,6 +114,8 @@ public class GithubIngestionClient {
     /**
      * Fetches real Pull Request metadata and unified git diff directly from GitHub REST API.
      */
+    @CircuitBreaker(name = "githubApi")
+    @Retry(name = "githubApi")
     public PullRequestSnapshot fetchPullRequest(String owner, String repo, int prNumber, String githubToken) {
         validateSegment(owner);
         validateSegment(repo);
@@ -141,6 +144,10 @@ public class GithubIngestionClient {
             if (rawDiff == null || rawDiff.isBlank()) {
                 throw new ForgeException(HttpStatus.BAD_REQUEST, "EMPTY_PR_DIFF",
                     "GitHub PR #" + prNumber + " has no diff changes to analyze.");
+            }
+            if (rawDiff.length() > MAX_DIFF_BYTES) {
+                throw new ForgeException(HttpStatus.PAYLOAD_TOO_LARGE, "PR_DIFF_TOO_LARGE",
+                    "Pull request diff exceeds the 1 MB analysis limit (" + rawDiff.length() + " bytes).");
             }
 
             return new PullRequestSnapshot(
@@ -174,6 +181,8 @@ public class GithubIngestionClient {
     /**
      * Publishes a real Markdown review comment onto a real GitHub Pull Request and returns the comment's html_url.
      */
+    @CircuitBreaker(name = "githubApi")
+    @Retry(name = "githubApi")
     public String postPullRequestComment(
         String owner, String repo, int prNumber, String markdownBody, String githubToken
     ) {
@@ -216,8 +225,16 @@ public class GithubIngestionClient {
         return Map.of();
     }
 
-    private void validateSegment(String segment) {
-        if (segment == null || !segment.matches("^[A-Za-z0-9_.-]+$")) {
+    void validateSegment(String segment) {
+        if (segment == null
+            || segment.isBlank()
+            || segment.length() > 100
+            || ".".equals(segment)
+            || "..".equals(segment)
+            || segment.contains("..")
+            || segment.startsWith(".")
+            || segment.endsWith(".")
+            || !segment.matches("^[A-Za-z0-9_.-]+$")) {
             throw new IllegalArgumentException("Invalid GitHub repository identifier: " + segment);
         }
     }

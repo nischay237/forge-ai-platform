@@ -4,75 +4,94 @@
 
 ```mermaid
 flowchart TB
-    Dev["Engineer Browser (React + TypeScript + Monaco + React Flow)"]
-    GH["GitHub (Webhooks + REST API)"]
-    LLM["LLM Provider (Spring AI OpenAI / Hybrid Local Engine)"]
+    Dev["Engineer Browser (React 18 + TypeScript + Monaco + React Flow)"]
+    GH["GitHub (Per-Tenant Signed Webhooks + REST API)"]
+    LLM["LLM Provider (Spring AI OpenAI via Resilience4j LlmReviewClient)"]
 
-    subgraph FORGE["FORGE Modular Monolith (Java 21 + Spring Boot 3.5)"]
-        API["REST API + Spring Security JWT + TenantContextFilter"]
-        SSE["SSE Pipeline Stream Hub"]
-        MOD["Domain Modules: Identity | Repo | CodeIntel (JavaParser) | Security | Review | CI | Analytics | Audit"]
-        OUTBOX["Transactional Outbox Poller + Idempotent Consumer"]
+    subgraph FORGE["FORGE Modular Monolith (Java 21 LTS + Spring Boot 3.5)"]
+        API["REST API + JWT/Refresh Auth + RBAC + TenantContext"]
+        SSE["SSE Hub (Single-Use Tickets, 20 Emitters/Tenant)"]
+        ENG["Deterministic Engines: JavaParser AST | TS/JS Analyzer | API & Migration Compat | Test Selector | Security/SCA/SBOM/SARIF | Change Risk Policy Engine"]
+        AI["AI Enrichment Engine (Prompt-Injection Quarantine + System/User Separation)"]
+        OUTBOX["Lease-Based Outbox Poller + Two-Phase JDBC Idempotency"]
     end
 
-    PG[("PostgreSQL 16 + pgvector (Source of Truth + Flyway)")]
-    KAFKA[["Apache Kafka (forge.pr-review.requested + .dlt)"]]
-    REDIS[("Redis 7 (Cache + Sliding-Window Rate Limiter)")]
+    PG[("PostgreSQL 16 (Source of Truth + Flyway V1-V5 + Optional RLS)")]
+    KAFKA[["Apache Kafka (forge.pr-review.requested | forge.repo-index.requested + DLTs)"]]
+    REDIS[("Redis 7 (Cache + Atomic Lua Rate Limiter + SSE Tickets)")]
     OBS["Micrometer + Prometheus + Grafana + OpenTelemetry"]
 
-    Dev -->|"HTTPS / REST + JWT"| API
-    Dev -->|"Server-Sent Events"| SSE
-    GH -->|"Signed HMAC-SHA256 Webhook"| API
-    API --> MOD
-    MOD -->|"ACID Tx (Domain + Outbox)"| PG
-    OUTBOX -->|"Poll & Publish"| KAFKA
-    KAFKA -->|"Idempotent Consumer + Retry + DLT"| MOD
-    MOD -->|"Cache + Rate Limit"| REDIS
-    MOD -->|"Resilience4j CircuitBreaker + Retry"| LLM
-    MOD -->|"Broadcast Progress"| SSE
+    Dev -->|"HTTPS / REST + Bearer JWT"| API
+    Dev -->|"POST /stream/ticket -> GET /stream/events?ticket=..."| SSE
+    GH -->|"HMAC-SHA256 Signed Webhook"| API
+    API --> ENG
+    ENG -->|"ACID Tx (Domain + Outbox)"| PG
+    OUTBOX -->|"Claim Lease & Publish"| KAFKA
+    KAFKA -->|"Two-Phase Idempotent Consumer + Retry + DLT"| ENG
+    ENG --> AI
+    AI -->|"Resilience4j CircuitBreaker + Retry + Timeout"| LLM
+    ENG -->|"Cache + Lua Rate Limit"| REDIS
+    ENG -->|"Broadcast Progress"| SSE
     FORGE -->|"Metrics & Traces"| OBS
 ```
 
-## 2. Event-Driven Pull Request Review Pipeline
+## 2. Deterministic Change Impact & Risk Pipeline
 
 ```mermaid
 sequenceDiagram
     participant Client as Developer / GitHub Webhook
     participant API as Spring Boot API
     participant DB as PostgreSQL (Source of Truth)
-    participant Outbox as Outbox Dispatcher / Kafka
-    participant Worker as Review Pipeline Worker
-    participant SSE as SSE Stream
+    participant Outbox as Outbox Worker / Kafka
+    participant Worker as ReviewPipelineService
+    participant SSE as SSE Stream (Ticket-Auth)
 
     Client->>API: POST /api/v1/reviews (or Signed GitHub Webhook)
     API->>DB: Tx: Insert PR Review (QUEUED) + OutboxEvent + AuditLog
     API-->>Client: 202 Accepted (reviewId, status=QUEUED)
-    Outbox->>DB: Poll PENDING outbox_events
-    Outbox->>Worker: Publish to Kafka topic forge.pr-review.requested
-    Worker->>DB: Check processed_events (Idempotency Guard)
-    Worker->>SSE: Stage 1: INGESTING_DIFF
-    Worker->>SSE: Stage 2: AST_IMPACT_ANALYSIS (JavaParser)
-    Worker->>SSE: Stage 3: SECURITY_SCANNING (Secrets + SAST)
-    Worker->>SSE: Stage 4: AI_CONTEXT_REVIEW (Prompt-Injection Guard + LLM/Rules)
-    Worker->>DB: Persist ReviewFindings + SecurityFindings + Update Status COMPLETED
-    Worker->>SSE: Stage 5: COMPLETED (final finding summary)
+    Outbox->>DB: Claim PENDING lease (locked_until)
+    Outbox->>Worker: Dispatch via Kafka (prod) or In-Process (local)
+    Worker->>DB: Two-Phase Idempotency Claim (processed_events IN_PROGRESS)
+    Worker->>SSE: Stage 1: INGESTING_DIFF (UnifiedDiffParser: ADDED/MODIFIED/DELETED/RENAMED + symbols)
+    Worker->>SSE: Stage 2: AST_IMPACT_ANALYSIS (JavaParser + TS/JS graph, cycles, blast radius)
+    Worker->>SSE: Stage 3: SECURITY_SCANNING (Secrets + Entropy + SAST + IaC + Offline SCA + Suppressions)
+    Worker->>SSE: Stage 4: COMPATIBILITY_AND_TESTS (API OpenAPI/Spring diff, Flyway DDL check, Static Test Selection NOT_EXECUTED)
+    Worker->>SSE: Stage 5: CHANGE_RISK_AND_AI (Deterministic Policy-as-Code PASS/WARN/BLOCK + AI Explanation)
+    Worker->>DB: Persist Risk Breakdown, Recommended Tests, Findings + Mark Idempotency COMPLETED
+    Worker->>SSE: Stage 6: COMPLETED
 ```
 
-## 3. Database ER Overview (Flyway Managed)
-- `tenants` (1) -> (N) `users`, `repositories`, `pull_request_reviews`, `security_findings`, `ci_builds`, `audit_logs`, `evaluation_runs`
-- `repositories` (1) -> (N) `source_files`, `code_symbols`, `code_dependencies`, `pull_request_reviews`, `security_findings`, `ci_builds`
-- `pull_request_reviews` (1) -> (N) `review_findings`
-- `outbox_events` (transactional event queue with `status`, `retry_count`, `next_attempt_at`, `error_message`)
-- `processed_events` (idempotency deduplication table keyed on `event_key`)
+## 3. Database Schema Overview (Flyway V1–V6)
+- **V1 (`V1__initial_schema.sql`)**: Core tables `tenants`, `users`, `repositories`, `source_files`, `code_symbols`, `code_dependencies`, `pull_request_reviews`, `review_findings`, `security_findings`, `ci_builds`, `audit_logs`, `evaluation_runs`, `outbox_events`, `processed_events`.
+- **V2–V3**: Indexes and schema extensions for evaluation/CI metrics.
+- **V4 (`V4__security_and_reliability_hardening.sql`)**:
+  - `users`: `failed_login_attempts`, `locked_until`, `token_version`.
+  - `refresh_tokens`: Rotating refresh token hashes, `family_id`, `replaced_by_token_id`, `revoked_at`, `expires_at`.
+  - `outbox_events`: Worker lease columns (`locked_by`, `locked_until`).
+  - `processed_events`: Two-phase idempotency status (`IN_PROGRESS` / `COMPLETED`) and lease metadata.
+  - `pull_request_reviews`: `publish_status` (`NOT_PUBLISHED`, `PUBLISHED`, `PUBLISH_FAILED`).
+  - Composite `(tenant_id, id)` unique constraints on core tenant-owned tables.
+- **V5 (`V5__change_risk_policy_and_suppressions.sql`)**:
+  - `pull_request_reviews`: `merge_decision` (`PASS`/`WARN`/`BLOCK`), `risk_breakdown_json`, `recommended_tests_json`.
+  - `security_findings`: deterministic `fingerprint` column for suppression matching.
+  - `finding_suppressions`: Persistent rule/file/fingerprint suppressions with `reason`, `expires_at`, and `created_by`.
+  - `change_risk_policies`: Workspace/repository Policy-as-Code rules (`block_on_critical_security`, `block_on_breaking_api`, `block_on_destructive_migration`, `block_on_prompt_injection`, score thresholds, `sensitive_paths_json`, `architecture_rules_json`, `version`).
+- **V6 (`V6__predictive_engineering_intelligence.sql`)**:
+  - Historical engineering store (all tenant-scoped with composite `(tenant_id, id)` keys and idempotent `external_event_key` indexes): `engineering_events`, `historical_test_executions`, `deployment_records`, `incident_records`, `defect_records`.
+  - Predictive baseline & evaluation store: `prediction_runs` (7-channel deduplicated breakdown + feature snapshot), `prediction_items` (nullable `probability` omitted unless calibrated, `confidence_level`, `insufficient_data`, `limitations`, `recommended_action`), `prediction_evidence`, `prediction_model_evaluations` (chronological held-out evaluation metrics).
 
 ## 4. Kafka Event Catalogue
 | Topic | Producer | Consumer | Key | Retry / DLT Policy |
-|-------|----------|----------|-----|--------------------|
-| `forge.pr-review.requested` | `OutboxPublisher` | `PrReviewEventConsumer` | `tenantId:reviewId` | 3 attempts exponential backoff -> `forge.pr-review.dlt` |
-| `forge.repo-index.requested` | `OutboxPublisher` | `RepoIndexEventConsumer` | `tenantId:repoId` | 3 attempts exponential backoff -> `forge.repo-index.dlt` |
-| `forge.pr-review.dlt` | Kafka DLT Handler | Dead-Letter Audit / Alerting | `tenantId:reviewId` | Persisted to audit log & failed status |
+|---|---|---|---|---|
+| `forge.pr-review.requested` | `OutboxService` | `KafkaDomainEventListener` (`ReviewPipelineService`) | `tenantId:reviewId` | 3 attempts exponential backoff -> `forge.pr-review.requested.dlt` |
+| `forge.pr-prediction.requested` | `OutboxService` | `KafkaDomainEventListener` (`PredictionPipelineService`) | `tenantId:reviewId` | 3 attempts exponential backoff -> `forge.pr-prediction.requested.dlt` |
+| `forge.repo-index.requested` | `OutboxService` | `KafkaDomainEventListener` (`RepositoryService`) | `tenantId:repoId` | 3 attempts exponential backoff -> `forge.repo-index.requested.dlt` |
+| `*.dlt` | Spring Kafka `@RetryableTopic` | `@DltHandler` (`ORIGINAL_TOPIC` inspection) | `tenantId:aggregateId` | Safe DLT audit logging with explicit `TenantContext` binding and cleanup |
 
-## 5. Module Dependency Rules (Enforced by ArchUnit)
-- `common` depends on NO other `com.forge.platform.*` module.
-- Domain modules (`repository`, `codeintel`, `security`, `review`, `ci`, `analytics`) may depend on `common`, `identity`, `audit`, `messaging`, `sse`, and designated upstream domain services — never circularly.
-- Controllers never access JPA repositories directly without going through a service layer for complex domain writes.
+## 5. Module Boundaries (Enforced by ArchUnit)
+- `common` depends on NO other `com.forge.platform.*` package.
+- `audit` depends only on `common` and `identity`.
+- `codeintel` must NOT depend on `review`, `prediction`, `ci`, or `analytics` (enforced by `ArchitectureBoundaryTest`).
+- `review` triggers predictions asynchronously via `OutboxService` (`ForgeTopics.PR_PREDICTION_REQUESTED`) with zero direct dependency on `prediction`.
+- Unscoped `SourceFileJpaRepository.findById` is prohibited by ArchUnit rule.
+- Frontend uses route-level `React.lazy` code splitting (initial entry bundle ~323 kB gzipped ~103 kB; `PredictiveIntelligencePage` 32.4 kB gzipped 7.7 kB), strict TypeScript (`noUnusedLocals`, `noUnusedParameters`), single-flight JWT refresh retry, and strict session/cache teardown on logout or tenant switch.

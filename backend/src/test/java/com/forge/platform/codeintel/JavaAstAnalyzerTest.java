@@ -9,27 +9,37 @@ class JavaAstAnalyzerTest {
     private final JavaAstAnalyzer analyzer = new JavaAstAnalyzer();
 
     @Test
-    void parsesJavaClassMethodsComplexityAndDependencies() {
+    void parsesJavaClassEnumsRecordsConstructorsOverloadsAndIgnoresComments() {
         String source = """
             package com.acme.ledger;
 
             import org.springframework.stereotype.Service;
+            import java.util.List;
 
+            // Mentioning FakeCommentType inside a comment must NOT create a dependency!
             @Service
-            public class PaymentProcessor {
+            public class PaymentProcessor extends BaseProcessor implements SettlementPort {
                 private final LedgerRepository ledgerRepository;
-                private final RiskEngine riskEngine;
+                private final List<RiskRule> activeRules;
 
-                public PaymentProcessor(LedgerRepository ledgerRepository, RiskEngine riskEngine) {
+                public enum Status { PENDING, SETTLED }
+                public record Receipt(String txId, AuditMeta meta) {}
+
+                public PaymentProcessor(LedgerRepository ledgerRepository, List<RiskRule> activeRules) {
                     this.ledgerRepository = ledgerRepository;
-                    this.riskEngine = riskEngine;
+                    this.activeRules = activeRules;
+                }
+
+                public String process(String id) {
+                    String note = "FakeStringClass inside literal must not become a dependency";
+                    return process(id, false);
                 }
 
                 public String process(String id, boolean urgent) {
                     if (id == null || id.isBlank()) {
                         throw new IllegalArgumentException("id required");
                     }
-                    if (urgent && riskEngine.isHighRisk(id)) {
+                    if (urgent && FraudEngine.isHighRisk(id)) {
                         return "BLOCKED";
                     }
                     return ledgerRepository.save(id);
@@ -42,10 +52,27 @@ class JavaAstAnalyzerTest {
         assertThat(result.primaryNode()).isEqualTo("PaymentProcessor");
         assertThat(result.fileComplexity()).isGreaterThanOrEqualTo(4);
         assertThat(result.symbols())
-            .extracting(JavaAstAnalyzer.ParsedSymbol::name)
-            .contains("PaymentProcessor", "process");
+            .extracting(JavaAstAnalyzer.ParsedSymbol::qualifiedName)
+            .contains(
+                "com.acme.ledger.PaymentProcessor",
+                "com.acme.ledger.PaymentProcessor.Status",
+                "com.acme.ledger.PaymentProcessor.Receipt",
+                "com.acme.ledger.PaymentProcessor#<init>(LedgerRepository,List<RiskRule>)",
+                "com.acme.ledger.PaymentProcessor#process(String)",
+                "com.acme.ledger.PaymentProcessor#process(String,boolean)"
+            );
         assertThat(result.dependencies())
             .extracting(JavaAstAnalyzer.RawDependency::targetNode)
-            .contains("LedgerRepository", "RiskEngine");
+            .contains("BaseProcessor", "SettlementPort", "LedgerRepository", "RiskRule", "AuditMeta", "FraudEngine")
+            .doesNotContain("FakeCommentType", "FakeStringClass");
+    }
+
+    @Test
+    void handlesMalformedJavaFilesGracefullyWithoutCrashing() {
+        String broken = "public class Broken { void foo( { if (a) }";
+        JavaAstAnalyzer.AstResult result = analyzer.analyze("src/main/java/Broken.java", "java", broken);
+
+        assertThat(result.primaryNode()).isEqualTo("Broken");
+        assertThat(result.symbols()).isNotEmpty();
     }
 }

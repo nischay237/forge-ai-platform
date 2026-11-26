@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -18,18 +18,19 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import type { RepositoryDto } from '../lib/types';
 import { Badge, Button, EmptyState, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
-import { formatRelativeTime, statusClasses } from '../lib/utils';
+import { formatRelativeTime, statusClasses, toSafeGithubUrl } from '../lib/utils';
 
 const connectSchema = z.object({
   owner: z
     .string()
     .min(1, 'GitHub owner/org is required')
-    .regex(/^[A-Za-z0-9_.-]+$/, 'Valid GitHub handle only'),
+    .regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/, 'Valid GitHub handle only'),
   name: z
     .string()
     .min(1, 'Repository name is required')
-    .regex(/^[A-Za-z0-9_.-]+$/, 'Valid repo slug only'),
+    .regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/, 'Valid repo slug only'),
   defaultBranch: z.string().min(1).default('main'),
   primaryLanguage: z.string().min(1).default('Java'),
   description: z.string().optional(),
@@ -40,7 +41,9 @@ type ConnectForm = z.infer<typeof connectSchema>;
 
 export function RepositoriesPage() {
   const [open, setOpen] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<RepositoryDto | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -69,6 +72,7 @@ export function RepositoriesPage() {
       qc.invalidateQueries({ queryKey: ['repos'] });
       qc.invalidateQueries({ queryKey: ['overview'] });
       setOpen(false);
+      setActionError(null);
       reset();
       setToast(`Connected ${repo.fullName} — queued AST indexing via Transactional Outbox.`);
     },
@@ -78,7 +82,11 @@ export function RepositoriesPage() {
     mutationFn: api.reindexRepo,
     onSuccess: (repo) => {
       qc.invalidateQueries({ queryKey: ['repos'] });
-      setToast(`Re-indexing ${repo.fullName} via JavaParser AST worker.`);
+      setActionError(null);
+      setToast(`Re-indexing ${repo.fullName} via AST worker.`);
+    },
+    onError: (err: unknown) => {
+      setActionError(err instanceof Error ? err.message : 'Failed to queue repository re-indexing');
     },
   });
 
@@ -87,7 +95,11 @@ export function RepositoriesPage() {
     onSuccess: (findings) => {
       qc.invalidateQueries({ queryKey: ['security'] });
       qc.invalidateQueries({ queryKey: ['overview'] });
-      setToast(`Security scan complete (${findings.length} total findings tracked for repository).`);
+      setActionError(null);
+      setToast(`Security & SCA scan complete (${findings.length} total findings tracked).`);
+    },
+    onError: (err: unknown) => {
+      setActionError(err instanceof Error ? err.message : 'Security scan failed');
     },
   });
 
@@ -96,7 +108,14 @@ export function RepositoriesPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['repos'] });
       qc.invalidateQueries({ queryKey: ['overview'] });
-      setToast('Disconnected repository from workspace.');
+      qc.invalidateQueries({ queryKey: ['reviews'] });
+      setPendingDelete(null);
+      setActionError(null);
+      setToast('Disconnected repository and purged associated workspace index records.');
+    },
+    onError: (err: unknown) => {
+      setPendingDelete(null);
+      setActionError(err instanceof Error ? err.message : 'Failed to disconnect repository');
     },
   });
 
@@ -106,7 +125,7 @@ export function RepositoriesPage() {
         eyebrow="GitHub Integration & Ingestion"
         title="Connected"
         accentWord="repositories."
-        description="Connect GitHub repositories for HMAC-signed pull request webhooks, JavaParser AST indexing, dependency graph extraction, and security scanning."
+        description="Connect GitHub repositories for per-tenant HMAC-signed pull request webhooks, Java/TypeScript AST indexing, dependency graph extraction, and SCA/security scanning."
         actions={
           <Button onClick={() => setOpen(true)}>
             <Plus className="w-3.5 h-3.5" />
@@ -120,12 +139,15 @@ export function RepositoriesPage() {
           <span>{toast}</span>
           <button
             onClick={() => setToast(null)}
+            aria-label="Dismiss notification"
             className="text-emerald-700 hover:text-emerald-950 cursor-pointer"
           >
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
+
+      {actionError && <ErrorBanner message={actionError} />}
 
       {repos.isError && (
         <ErrorBanner
@@ -143,115 +165,150 @@ export function RepositoriesPage() {
         <EmptyState
           icon={FolderGit2}
           title="No repositories connected yet"
-          description="Connect a public GitHub repository or provision a Spring Boot codebase to unlock AST dependency graphs and PR reviews."
+          description="Connect a GitHub repository or provision a starter codebase to unlock AST dependency graphs, Change Risk analysis, and SBOM/SARIF scans."
           action={<Button onClick={() => setOpen(true)}>Connect first repository</Button>}
         />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {(repos.data ?? []).map((repo) => (
-            <Panel key={repo.id} className="p-5 flex flex-col justify-between gap-4">
-              <div>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <FolderGit2 className="w-4 h-4 text-[#111111] shrink-0" />
-                      <h3 className="text-sm font-semibold text-[#111111] truncate font-mono">
-                        {repo.fullName}
-                      </h3>
+          {(repos.data ?? []).map((repo) => {
+            const safeGhUrl = toSafeGithubUrl(repo.githubUrl);
+            return (
+              <Panel key={repo.id} className="p-5 flex flex-col justify-between gap-4">
+                <div>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <FolderGit2 className="w-4 h-4 text-[#111111] shrink-0" />
+                        <h3 className="text-sm font-semibold text-[#111111] truncate font-mono">
+                          {repo.fullName}
+                        </h3>
+                      </div>
+                      <p className="text-xs text-stone-600 mt-1.5 leading-relaxed">
+                        {repo.description || 'Connected repository monitored by FORGE.'}
+                      </p>
                     </div>
-                    <p className="text-xs text-stone-600 mt-1.5 leading-relaxed">
-                      {repo.description || 'Connected repository monitored by FORGE.'}
-                    </p>
+                    <Badge className={statusClasses(repo.indexStatus)}>{repo.indexStatus}</Badge>
                   </div>
-                  <Badge className={statusClasses(repo.indexStatus)}>{repo.indexStatus}</Badge>
+
+                  <div className="grid grid-cols-3 gap-2.5 mt-4">
+                    <div className="rounded-lg bg-[#FAFAF8] border border-[#EAEAE4] px-3 py-2">
+                      <div className="text-[10px] font-mono uppercase text-stone-500">Files</div>
+                      <div className="text-base font-semibold text-[#111111] tabular-nums mt-0.5">
+                        {repo.fileCount}
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-[#FAFAF8] border border-[#EAEAE4] px-3 py-2">
+                      <div className="text-[10px] font-mono uppercase text-stone-500">AST Symbols</div>
+                      <div className="text-base font-semibold text-[#111111] tabular-nums mt-0.5">
+                        {repo.symbolCount}
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-[#FAFAF8] border border-[#EAEAE4] px-3 py-2">
+                      <div className="text-[10px] font-mono uppercase text-stone-500">Dep Edges</div>
+                      <div className="text-base font-semibold text-[#111111] tabular-nums mt-0.5">
+                        {repo.dependencyCount}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
-                {/* Indexed AST Counters */}
-                <div className="grid grid-cols-3 gap-2.5 mt-4">
-                  <div className="rounded-lg bg-[#FAFAF8] border border-[#EAEAE4] px-3 py-2">
-                    <div className="text-[10px] font-mono uppercase text-stone-500">Files</div>
-                    <div className="text-base font-semibold text-[#111111] tabular-nums mt-0.5">
-                      {repo.fileCount}
-                    </div>
+                <div className="pt-3.5 border-t border-[#EFEFEA] flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-3 text-[11px] font-mono text-stone-500">
+                    <span className="flex items-center gap-1">
+                      <GitBranch className="w-3 h-3" /> {repo.defaultBranch}
+                    </span>
+                    <span>{repo.primaryLanguage}</span>
+                    <span className="flex items-center gap-1 text-emerald-700">
+                      <Webhook className="w-3 h-3" /> HMAC Ready
+                    </span>
+                    <span>{formatRelativeTime(repo.lastIndexedAt)}</span>
                   </div>
-                  <div className="rounded-lg bg-[#FAFAF8] border border-[#EAEAE4] px-3 py-2">
-                    <div className="text-[10px] font-mono uppercase text-stone-500">AST Symbols</div>
-                    <div className="text-base font-semibold text-[#111111] tabular-nums mt-0.5">
-                      {repo.symbolCount}
-                    </div>
-                  </div>
-                  <div className="rounded-lg bg-[#FAFAF8] border border-[#EAEAE4] px-3 py-2">
-                    <div className="text-[10px] font-mono uppercase text-stone-500">Dep Edges</div>
-                    <div className="text-base font-semibold text-[#111111] tabular-nums mt-0.5">
-                      {repo.dependencyCount}
-                    </div>
-                  </div>
-                </div>
-              </div>
 
-              <div className="pt-3.5 border-t border-[#EFEFEA] flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-3 text-[11px] font-mono text-stone-500">
-                  <span className="flex items-center gap-1">
-                    <GitBranch className="w-3 h-3" /> {repo.defaultBranch}
-                  </span>
-                  <span>{repo.primaryLanguage}</span>
-                  <span className="flex items-center gap-1 text-emerald-700">
-                    <Webhook className="w-3 h-3" /> HMAC Ready
-                  </span>
-                  <span>{formatRelativeTime(repo.lastIndexedAt)}</span>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => navigate(`/code-intel?repo=${encodeURIComponent(repo.id)}`)}
+                    >
+                      <Network className="w-3.5 h-3.5" />
+                      AST Graph
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => reindexMutation.mutate(repo.id)}
+                      disabled={reindexMutation.isPending}
+                      title="Re-run AST indexing"
+                      aria-label={`Re-index ${repo.fullName}`}
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => scanMutation.mutate(repo.id)}
+                      disabled={scanMutation.isPending}
+                      title="Run Secret, SAST, IaC & SCA scan"
+                      aria-label={`Scan ${repo.fullName}`}
+                    >
+                      <Shield className="w-3.5 h-3.5" />
+                    </Button>
+                    {safeGhUrl && (
+                      <a
+                        href={safeGhUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="h-8 w-8 inline-flex items-center justify-center rounded-md text-stone-500 hover:text-[#111111] hover:bg-stone-100"
+                        title="Open on GitHub"
+                        aria-label={`Open ${repo.fullName} on GitHub`}
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setPendingDelete(repo)}
+                      title="Disconnect repository"
+                      aria-label={`Disconnect ${repo.fullName}`}
+                      className="text-stone-400 hover:text-red-700"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
                 </div>
-
-                <div className="flex items-center gap-1.5">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => navigate(`/code-intel?repo=${repo.id}`)}
-                  >
-                    <Network className="w-3.5 h-3.5" />
-                    AST Graph
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => reindexMutation.mutate(repo.id)}
-                    disabled={reindexMutation.isPending}
-                    title="Re-run JavaParser AST indexing"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => scanMutation.mutate(repo.id)}
-                    disabled={scanMutation.isPending}
-                    title="Run Gitleaks + Semgrep security scan"
-                  >
-                    <Shield className="w-3.5 h-3.5" />
-                  </Button>
-                  <a
-                    href={repo.githubUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="h-8 w-8 inline-flex items-center justify-center rounded-md text-stone-500 hover:text-[#111111] hover:bg-stone-100"
-                    title="Open on GitHub"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => deleteMutation.mutate(repo.id)}
-                    title="Disconnect repository"
-                    className="text-stone-400 hover:text-red-700"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
-                </div>
-              </div>
-            </Panel>
-          ))}
+              </Panel>
+            );
+          })}
         </div>
       )}
+
+      {/* Confirmation Dialog before Cascade Delete */}
+      <Dialog.Root open={!!pendingDelete} onOpenChange={(isOpen) => !isOpen && setPendingDelete(null)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[2px]" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl bg-white border border-[#DCDCD5] p-6 shadow-2xl space-y-4">
+            <Dialog.Title className="text-sm font-semibold text-[#111111]">
+              Disconnect repository?
+            </Dialog.Title>
+            <p className="text-xs text-stone-600 leading-relaxed">
+              This will permanently remove <strong className="font-mono text-[#111111]">{pendingDelete?.fullName}</strong> along with its indexed AST symbols, dependency graph, pull request reviews, security findings, and CI builds in this workspace.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" onClick={() => setPendingDelete(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                disabled={deleteMutation.isPending}
+                onClick={() => pendingDelete && deleteMutation.mutate(pendingDelete.id)}
+              >
+                {deleteMutation.isPending ? 'Disconnecting...' : 'Disconnect Repository'}
+              </Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
 
       {/* Connect Repository Modal */}
       <Dialog.Root open={open} onOpenChange={setOpen}>
@@ -273,10 +330,11 @@ export function RepositoriesPage() {
             >
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-stone-700 mb-1">
+                  <label htmlFor="repo-owner" className="block text-xs font-medium text-stone-700 mb-1">
                     Owner / Org
                   </label>
                   <input
+                    id="repo-owner"
                     {...register('owner')}
                     className="w-full h-9 px-3 rounded-md bg-[#FAFAF8] border border-[#DCDCD5] text-xs font-mono text-[#111111] focus:outline-none focus:border-[#111111]"
                   />
@@ -285,10 +343,11 @@ export function RepositoriesPage() {
                   )}
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-stone-700 mb-1">
+                  <label htmlFor="repo-name" className="block text-xs font-medium text-stone-700 mb-1">
                     Repository Name
                   </label>
                   <input
+                    id="repo-name"
                     {...register('name')}
                     className="w-full h-9 px-3 rounded-md bg-[#FAFAF8] border border-[#DCDCD5] text-xs font-mono text-[#111111] focus:outline-none focus:border-[#111111]"
                   />
@@ -300,19 +359,21 @@ export function RepositoriesPage() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-stone-700 mb-1">
+                  <label htmlFor="repo-branch" className="block text-xs font-medium text-stone-700 mb-1">
                     Default Branch
                   </label>
                   <input
+                    id="repo-branch"
                     {...register('defaultBranch')}
                     className="w-full h-9 px-3 rounded-md bg-[#FAFAF8] border border-[#DCDCD5] text-xs font-mono text-[#111111] focus:outline-none focus:border-[#111111]"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-stone-700 mb-1">
+                  <label htmlFor="repo-lang" className="block text-xs font-medium text-stone-700 mb-1">
                     Primary Language
                   </label>
                   <select
+                    id="repo-lang"
                     {...register('primaryLanguage')}
                     className="w-full h-9 px-3 rounded-md bg-[#FAFAF8] border border-[#DCDCD5] text-xs text-[#111111] focus:outline-none focus:border-[#111111]"
                   >
@@ -324,8 +385,11 @@ export function RepositoriesPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-stone-700 mb-1">Description</label>
+                <label htmlFor="repo-desc" className="block text-xs font-medium text-stone-700 mb-1">
+                  Description
+                </label>
                 <input
+                  id="repo-desc"
                   {...register('description')}
                   className="w-full h-9 px-3 rounded-md bg-[#FAFAF8] border border-[#DCDCD5] text-xs text-[#111111] focus:outline-none focus:border-[#111111]"
                 />
@@ -343,14 +407,13 @@ export function RepositoriesPage() {
                   </div>
                   <div className="text-[11px] text-stone-500 mt-0.5 leading-relaxed">
                     Fetches up to 18 source files via GitHub REST API (Resilience4j circuit-breaker
-                    protected). If unchecked or unreachable, provisions a realistic multi-layer Java
-                    Spring codebase for instant AST analysis.
+                    protected). If unchecked or unreachable, provisions a starter Spring codebase.
                   </div>
                 </div>
               </label>
 
               {connectMutation.isError && (
-                <div className="p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-700">
+                <div role="alert" className="p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-700">
                   {connectMutation.error instanceof Error
                     ? connectMutation.error.message
                     : 'Failed to connect repository'}

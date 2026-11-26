@@ -4,6 +4,7 @@ import com.forge.platform.audit.AuditService;
 import com.forge.platform.ci.CiService;
 import com.forge.platform.codeintel.CodeIntelligenceService;
 import com.forge.platform.common.SecretCryptoService;
+import com.forge.platform.identity.AuthService;
 import com.forge.platform.identity.Role;
 import com.forge.platform.identity.Tenant;
 import com.forge.platform.identity.TenantRepository;
@@ -21,6 +22,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
@@ -28,11 +31,13 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Seeds a realistic enterprise workspace on first boot when the database is empty.
- * Every AST symbol, dependency edge, PR review finding, security alert, CI diagnosis,
- * and evaluation benchmark score is genuinely computed by FORGE's real analysis engines.
+ * Isolated demo workspace seeder.
+ * ONLY active when BOTH the 'demo' profile is enabled AND forge.seed.enabled=true.
+ * Never loads in default local, test, or production deployments.
  */
 @Component
+@Profile("demo & !prod")
+@ConditionalOnProperty(name = "forge.seed.enabled", havingValue = "true", matchIfMissing = false)
 public class DemoWorkspaceSeeder implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DemoWorkspaceSeeder.class);
@@ -49,8 +54,11 @@ public class DemoWorkspaceSeeder implements ApplicationRunner {
     private final ReviewEvaluationService evaluationService;
     private final CiService ciService;
     private final AuditService auditService;
-    private final boolean seedEnabled;
-    private final String defaultWebhookSecret;
+    private final String demoOwnerEmail;
+    private final String demoAdminEmail;
+    private final String demoReviewerEmail;
+    private final String demoInitialPassword;
+    private final String demoWebhookSecret;
 
     public DemoWorkspaceSeeder(
         TenantRepository tenantRepository,
@@ -65,8 +73,11 @@ public class DemoWorkspaceSeeder implements ApplicationRunner {
         ReviewEvaluationService evaluationService,
         CiService ciService,
         AuditService auditService,
-        @Value("${forge.seed.enabled:true}") boolean seedEnabled,
-        @Value("${forge.security.default-webhook-secret}") String defaultWebhookSecret
+        @Value("${forge.demo.owner-email:nischay@forge.dev}") String demoOwnerEmail,
+        @Value("${forge.demo.admin-email:ananya.sec@forge.dev}") String demoAdminEmail,
+        @Value("${forge.demo.reviewer-email:rohan.sde@forge.dev}") String demoReviewerEmail,
+        @Value("${forge.demo.initial-password:}") String demoInitialPassword,
+        @Value("${forge.demo.webhook-secret:}") String demoWebhookSecret
     ) {
         this.tenantRepository = tenantRepository;
         this.userRepository = userRepository;
@@ -80,34 +91,39 @@ public class DemoWorkspaceSeeder implements ApplicationRunner {
         this.evaluationService = evaluationService;
         this.ciService = ciService;
         this.auditService = auditService;
-        this.seedEnabled = seedEnabled;
-        this.defaultWebhookSecret = defaultWebhookSecret;
+        this.demoOwnerEmail = demoOwnerEmail;
+        this.demoAdminEmail = demoAdminEmail;
+        this.demoReviewerEmail = demoReviewerEmail;
+        this.demoInitialPassword = (demoInitialPassword == null || demoInitialPassword.isBlank())
+            ? cryptoService.generateSecureToken(18)
+            : demoInitialPassword;
+        this.demoWebhookSecret = (demoWebhookSecret == null || demoWebhookSecret.isBlank())
+            ? "whsec_" + cryptoService.generateSecureToken(32)
+            : demoWebhookSecret;
     }
 
     @Override
     public void run(ApplicationArguments args) {
-        if (!seedEnabled || tenantRepository.count() > 0) {
+        if (tenantRepository.count() > 0) {
             return;
         }
-        log.info("Initializing FORGE enterprise workspace with real JavaParser AST & AI/Security pipeline execution...");
+        log.info("Initializing isolated FORGE demo workspace with real AST & security pipeline execution...");
 
-        Tenant tenant = tenantRepository.save(Tenant.create(
-            "Acme FinTech Core",
-            "acme-fintech",
-            cryptoService.encrypt(defaultWebhookSecret)
-        ));
+        Tenant tenant = Tenant.create("Acme FinTech Core", "acme-fintech", null);
+        tenant.setWebhookSecretEncrypted(cryptoService.encrypt(demoWebhookSecret, AuthService.webhookAad(tenant.getId())));
+        tenant = tenantRepository.save(tenant);
 
         userRepository.save(User.create(
-            tenant.getId(), "nischay@forge.dev", "Nischay Srivastava",
-            passwordEncoder.encode("ForgeUser@2026"), Role.OWNER
+            tenant.getId(), demoOwnerEmail, "Nischay Srivastava",
+            passwordEncoder.encode(demoInitialPassword), Role.OWNER
         ));
         userRepository.save(User.create(
-            tenant.getId(), "ananya.sec@forge.dev", "Ananya Verma (AppSec)",
-            passwordEncoder.encode("ForgeUser@2026"), Role.ADMIN
+            tenant.getId(), demoAdminEmail, "Ananya Verma (AppSec)",
+            passwordEncoder.encode(demoInitialPassword), Role.ADMIN
         ));
         userRepository.save(User.create(
-            tenant.getId(), "rohan.sde@forge.dev", "Rohan Kulkarni (Staff SDE)",
-            passwordEncoder.encode("ForgeUser@2026"), Role.REVIEWER
+            tenant.getId(), demoReviewerEmail, "Rohan Kulkarni (Staff SDE)",
+            passwordEncoder.encode(demoInitialPassword), Role.REVIEWER
         ));
 
         // 1. Seed Primary Spring Boot Microservice Repository
@@ -251,7 +267,7 @@ public class DemoWorkspaceSeeder implements ApplicationRunner {
             "Initialized Acme FinTech Core with 2 indexed repositories, 3 analyzed PRs, 4 CI runs, and reproducible evaluation benchmark",
             "bootstrap");
 
-        log.info("FORGE workspace ready. Demo login: nischay@forge.dev / ForgeUser@2026");
+        log.info("Isolated FORGE demo workspace '{}' initialized (2 repositories, 3 PR reviews, 4 CI builds).", tenant.getSlug());
     }
 
     private void seedRealReview(String tenantId, String repoId, int prNum, String title,

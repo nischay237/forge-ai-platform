@@ -52,6 +52,9 @@ public class ReviewFindingEntity {
     @Column(name = "suggested_patch", columnDefinition = "TEXT")
     private String suggestedPatch;
 
+    @Column(name = "fingerprint")
+    private String fingerprint;
+
     @Column(nullable = false)
     private String status;
 
@@ -109,6 +112,8 @@ public class ReviewFindingEntity {
     public String getExplanation() { return explanation; }
     public String getEvidence() { return evidence; }
     public String getSuggestedPatch() { return suggestedPatch; }
+    public String getFingerprint() { return fingerprint; }
+    public void setFingerprint(String fingerprint) { this.fingerprint = fingerprint; }
     public String getStatus() { return status; }
     public String getReviewedBy() { return reviewedBy; }
     public Instant getReviewedAt() { return reviewedAt; }

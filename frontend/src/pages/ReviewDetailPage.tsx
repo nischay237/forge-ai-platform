@@ -1,22 +1,30 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { DiffEditor } from '@monaco-editor/react';
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowUpRight,
   Check,
   CheckCircle2,
-  FileText,
+  FlaskConical,
   GitBranch,
   Radar,
+  Scale,
   Send,
   ShieldAlert,
   X,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { Badge, Button, ErrorBanner, Panel, SkeletonBlock } from '../components/ui';
-import { severityClasses, statusClasses } from '../lib/utils';
+import {
+  mergeDecisionClasses,
+  predictionRiskClasses,
+  severityClasses,
+  statusClasses,
+  toSafeGithubUrl,
+} from '../lib/utils';
 
 export function ReviewDetailPage() {
   const { reviewId = '' } = useParams();
@@ -35,6 +43,13 @@ export function ReviewDetailPage() {
     },
   });
 
+  const prediction = useQuery({
+    queryKey: ['prediction', reviewId],
+    queryFn: () => api.getPrPrediction(reviewId),
+    enabled: !!reviewId && detail.data?.review.status === 'COMPLETED',
+    retry: false,
+  });
+
   useEffect(() => {
     setActiveFileIdx(0);
   }, [reviewId]);
@@ -45,6 +60,12 @@ export function ReviewDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['review', reviewId] });
       qc.invalidateQueries({ queryKey: ['audit'] });
+    },
+    onError: (err: unknown) => {
+      setBanner({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Could not update finding status',
+      });
     },
   });
 
@@ -58,7 +79,7 @@ export function ReviewDetailPage() {
         type: 'ok',
         text: updated.githubCommentUrl
           ? `LIVE ON GITHUB! Approved review comments posted directly to GitHub PR #${updated.prNumber}.`
-          : 'Approved findings published in workspace & logged to Audit Trail. (Add a GitHub Token in Settings to post live comments on GitHub.)',
+          : 'Approved findings recorded locally in workspace Audit Trail. (Add a workspace GitHub Token in Settings to post live comments on GitHub.)',
       });
     },
     onError: (err: unknown) => {
@@ -87,14 +108,18 @@ export function ReviewDetailPage() {
     );
   }
 
-  const { review, files, findings, changeImpacts } = detail.data;
+  const { review, files, findings, changeImpacts, riskAssessment, testSelectionPlan } = detail.data;
   const activeFile = files[activeFileIdx] ?? files[0];
   const approvedCount = findings.filter((f) => f.status === 'APPROVED').length;
   const totalImpacted = changeImpacts.reduce((acc, c) => acc + c.totalImpacted, 0);
+  const safePrUrl = !review.repositoryName.startsWith('acme-fintech/')
+    ? toSafeGithubUrl(`https://github.com/${review.repositoryName}/pull/${review.prNumber}`)
+    : null;
+  const safeCommentUrl = toSafeGithubUrl(review.githubCommentUrl);
 
   return (
     <div className="space-y-5">
-      {/* Top Navigation + Summary Header */}
+      {/* Top Navigation + Merge Decision Header */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-[#E5E5E0]">
         <div className="space-y-1.5 min-w-0">
           <Link
@@ -110,6 +135,9 @@ export function ReviewDetailPage() {
             <h1 className="text-lg sm:text-xl font-semibold tracking-[-0.025em] text-[#111111]">
               {review.title}
             </h1>
+            <Badge className={mergeDecisionClasses(review.mergeDecision)}>
+              {review.mergeDecision}
+            </Badge>
             <Badge className={statusClasses(review.status)}>{review.status}</Badge>
           </div>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono text-stone-500">
@@ -125,11 +153,11 @@ export function ReviewDetailPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          {!review.repositoryName.startsWith('acme-fintech/') && (
+          {safePrUrl && (
             <a
-              href={`https://github.com/${review.repositoryName}/pull/${review.prNumber}`}
+              href={safePrUrl}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="h-9 px-3 rounded-md bg-white hover:bg-stone-50 border border-[#DCDCD5] text-xs font-medium text-[#111111] inline-flex items-center gap-1 transition-colors"
             >
               Open PR on GitHub <ArrowUpRight className="w-3.5 h-3.5" />
@@ -140,9 +168,9 @@ export function ReviewDetailPage() {
             <div className="text-[10px] font-mono uppercase text-stone-500">Risk Score</div>
             <div
               className={`text-base font-mono font-semibold tabular-nums ${
-                review.riskScore >= 70
+                review.riskScore >= 65
                   ? 'text-red-700'
-                  : review.riskScore >= 40
+                  : review.riskScore > 25
                   ? 'text-amber-700'
                   : 'text-emerald-700'
               }`}
@@ -151,11 +179,11 @@ export function ReviewDetailPage() {
             </div>
           </div>
 
-          {review.githubCommentUrl ? (
+          {safeCommentUrl ? (
             <a
-              href={review.githubCommentUrl}
+              href={safeCommentUrl}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="h-9 px-3.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-medium inline-flex items-center gap-1.5 transition-colors"
             >
               <CheckCircle2 className="w-3.5 h-3.5" />
@@ -167,10 +195,15 @@ export function ReviewDetailPage() {
               onClick={() => publishMutation.mutate()}
               disabled={publishMutation.isPending || review.publishedToGithub}
             >
-              {review.publishedToGithub ? (
+              {review.publishStatus === 'PUBLISHED_TO_GITHUB' ? (
                 <>
                   <CheckCircle2 className="w-3.5 h-3.5" />
                   Published to GitHub
+                </>
+              ) : review.publishedToGithub ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  Approved Locally
                 </>
               ) : (
                 <>
@@ -185,6 +218,7 @@ export function ReviewDetailPage() {
 
       {banner && (
         <div
+          role={banner.type === 'err' ? 'alert' : 'status'}
           className={`rounded-lg px-4 py-2.5 text-xs flex items-center justify-between border ${
             banner.type === 'ok'
               ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
@@ -192,26 +226,65 @@ export function ReviewDetailPage() {
           }`}
         >
           <span>{banner.text}</span>
-          <button onClick={() => setBanner(null)} className="cursor-pointer">
+          <button onClick={() => setBanner(null)} aria-label="Dismiss message" className="cursor-pointer">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
 
-      {/* Executive Summary + AST Change Impact Strip */}
+      {/* Deterministic Change Risk Intelligence + AST Impact + Recommended Tests */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Panel className="lg:col-span-2 p-4">
-          <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-stone-500 flex items-center gap-1.5 mb-1.5">
-            <FileText className="w-3.5 h-3.5 text-[#111111]" />
-            Contextual Review Summary
+        <Panel className="lg:col-span-2 p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-stone-500 flex items-center gap-1.5">
+              <Scale className="w-3.5 h-3.5 text-[#111111]" />
+              Deterministic Change Risk Assessment {riskAssessment ? `(Policy v${riskAssessment.policyVersion})` : ''}
+            </div>
+            {riskAssessment && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {riskAssessment.breakingApiCount > 0 && (
+                  <Badge className={severityClasses('CRITICAL')}>
+                    {riskAssessment.breakingApiCount} Breaking API
+                  </Badge>
+                )}
+                {riskAssessment.migrationRiskCount > 0 && (
+                  <Badge className={severityClasses('CRITICAL')}>
+                    {riskAssessment.migrationRiskCount} DB Migration Risk
+                  </Badge>
+                )}
+                {riskAssessment.criticalSecurityCount > 0 && (
+                  <Badge className={severityClasses('CRITICAL')}>
+                    {riskAssessment.criticalSecurityCount} Critical Security
+                  </Badge>
+                )}
+              </div>
+            )}
           </div>
-          <p className="text-xs sm:text-[13px] text-stone-700 leading-relaxed">
-            {review.summary || 'Pipeline is currently analyzing this pull request...'}
+          <p className="text-xs sm:text-[13px] text-stone-800 leading-relaxed font-medium">
+            {riskAssessment?.decisionSummary || review.summary || 'Pipeline is currently analyzing this pull request...'}
           </p>
+          {riskAssessment && riskAssessment.triggeredPolicies.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] font-mono uppercase text-stone-500">Triggered Policies:</span>
+              {riskAssessment.triggeredPolicies.map((pol) => (
+                <span
+                  key={pol}
+                  className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#111111] text-white"
+                >
+                  {pol}
+                </span>
+              ))}
+            </div>
+          )}
+          {riskAssessment?.safetyDisclaimer && (
+            <div className="text-[11px] text-stone-500 border-t border-[#EFEFEA] pt-2">
+              {riskAssessment.safetyDisclaimer}
+            </div>
+          )}
         </Panel>
 
-        <Panel className="p-4">
-          <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-stone-500 flex items-center gap-1.5 mb-1.5">
+        <Panel className="p-4 space-y-2.5">
+          <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-stone-500 flex items-center gap-1.5">
             <Radar className="w-3.5 h-3.5 text-amber-700" />
             AST Change Impact Blast Radius
           </div>
@@ -220,23 +293,151 @@ export function ReviewDetailPage() {
             downstream dependents across <span className="font-mono">{files.length}</span> modified
             file(s).
           </div>
-          <div className="flex flex-wrap gap-1.5 mt-2">
+          <div className="flex flex-wrap gap-1.5">
             {changeImpacts
               .flatMap((c) => c.impactedNodes)
-              .slice(0, 5)
+              .slice(0, 6)
               .map((n) => (
-                <span
+                <Link
                   key={n.nodeName}
-                  className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200"
+                  to={`/code-intel?repo=${encodeURIComponent(review.repositoryId)}&node=${encodeURIComponent(n.nodeName)}`}
+                  title={n.impactReason}
+                  className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 transition-colors"
                 >
-                  {n.nodeName}
-                </span>
+                  {n.nodeName} (hop {n.hopDistance})
+                </Link>
               ))}
           </div>
         </Panel>
       </div>
 
-      {/* Main Workbench: Monaco Diff Editor (Dark Code Canvas) + Crisp White Findings Drawer */}
+      {/* Predictive Engineering Failure Forecast (Advisory, Non-Blocking) */}
+      {prediction.isLoading && detail.data?.review.status === 'COMPLETED' && (
+        <SkeletonBlock className="h-32" />
+      )}
+      {prediction.data && (
+        <Panel className="p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-stone-500">
+                Predictive Failure Forecast · {prediction.data.engineVersion}
+              </div>
+              <div className="text-xs text-stone-700 mt-0.5">
+                Overall Engineering Risk:{' '}
+                <span className="font-mono font-semibold text-[#111111]">
+                  {prediction.data.overallEngineeringRiskScore}/100 ({prediction.data.overallRiskLevel})
+                </span>{' '}
+                · Historical samples:{' '}
+                <span className="font-mono">{prediction.data.historicalSampleSize}</span>
+              </div>
+            </div>
+            <Link
+              to={`/predictions?reviewId=${encodeURIComponent(reviewId)}`}
+              className="h-8 px-3 rounded-md bg-[#111111] text-white text-xs font-medium inline-flex items-center gap-1 hover:bg-stone-800 transition-colors"
+            >
+              Inspect Full Predictive Evidence <ArrowUpRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+            {prediction.data.predictions.map((item) => (
+              <div key={item.id} className="rounded-md border border-[#E5E5E0] bg-[#FAFAF8] p-2.5 space-y-1">
+                <div className="text-[10px] font-mono uppercase text-stone-500 truncate">
+                  {item.category.replace(/_/g, ' ')}
+                </div>
+                <div className="flex items-center justify-between gap-1">
+                  <Badge className={predictionRiskClasses(item.riskLevel)}>
+                    {item.riskLevel} ({item.riskScore})
+                  </Badge>
+                  <span className="text-[10px] font-mono text-stone-500">{item.confidenceLevel}</span>
+                </div>
+                <div className="text-[11px] text-stone-600 line-clamp-2">{item.explanation}</div>
+              </div>
+            ))}
+          </div>
+          <div className="text-[11px] text-stone-500 border-t border-[#EFEFEA] pt-2">
+            {prediction.data.policyBoundaryNote}
+          </div>
+        </Panel>
+      )}
+
+      {/* Explainable Risk Factors + Intelligent Test Selection */}
+      {(riskAssessment?.factors?.length || testSelectionPlan) && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          {riskAssessment && riskAssessment.factors.length > 0 && (
+            <Panel className="p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xs font-mono font-semibold uppercase tracking-[0.08em] text-[#111111] flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 text-stone-600" />
+                  Explainable Risk Factors ({riskAssessment.factors.length})
+                </h2>
+                <span className="text-[11px] font-mono text-stone-500">
+                  Total Score: {riskAssessment.riskScore}/100
+                </span>
+              </div>
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                {riskAssessment.factors.map((factor, idx) => (
+                  <div
+                    key={idx}
+                    className="p-2.5 rounded-lg bg-[#FAFAF8] border border-[#EAEAE4] text-xs space-y-1"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <Badge className={severityClasses(factor.severity)}>{factor.severity}</Badge>
+                        <span className="font-semibold text-[#111111] truncate">{factor.title}</span>
+                      </div>
+                      <span className="font-mono text-[11px] font-semibold text-[#111111] shrink-0">
+                        +{factor.riskPoints} pts
+                      </span>
+                    </div>
+                    <div className="text-[10.5px] font-mono text-stone-500 flex flex-wrap gap-x-2">
+                      <span>{factor.category}</span>
+                      <span>·</span>
+                      <span>{factor.policyRule}</span>
+                      <span>·</span>
+                      <span>conf {(factor.confidence * 100).toFixed(0)}%</span>
+                    </div>
+                    <div className="text-[11px] text-stone-600">{factor.evidence}</div>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          )}
+
+          {testSelectionPlan && (
+            <Panel className="p-4 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-xs font-mono font-semibold uppercase tracking-[0.08em] text-[#111111] flex items-center gap-1.5">
+                  <FlaskConical className="w-3.5 h-3.5 text-stone-600" />
+                  Recommended Tests ({testSelectionPlan.recommendedCount})
+                </h2>
+                <Badge className="bg-[#111111] text-white border-[#111111]">
+                  {testSelectionPlan.executionStatus}
+                </Badge>
+              </div>
+              <p className="text-[11px] text-stone-500 leading-relaxed">{testSelectionPlan.disclaimer}</p>
+              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                {testSelectionPlan.selectedTests.map((t, idx) => (
+                  <div
+                    key={idx}
+                    className="p-2.5 rounded-lg bg-[#FAFAF8] border border-[#EAEAE4] text-xs space-y-1"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono font-semibold text-[#111111] truncate">{t.testName}</span>
+                      <Badge className={severityClasses(t.priority)}>{t.priority}</Badge>
+                    </div>
+                    <div className="text-[11px] text-stone-600">{t.selectionReason}</div>
+                    <code className="block text-[10.5px] font-mono px-2 py-1 rounded bg-[#141416] text-stone-200 overflow-x-auto">
+                      {t.suggestedCommand}
+                    </code>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          )}
+        </div>
+      )}
+
+      {/* Main Workbench: Monaco Diff Editor + Crisp Findings Drawer */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
         <Panel className="xl:col-span-7 overflow-hidden flex flex-col">
           <div className="px-4 py-2.5 border-b border-[#EFEFEA] bg-[#FAFAF8] flex flex-wrap items-center justify-between gap-2">
@@ -306,10 +507,9 @@ export function ReviewDetailPage() {
           {findings.length === 0 ? (
             <Panel className="p-6 text-center space-y-2">
               <CheckCircle2 className="w-7 h-7 text-emerald-700 mx-auto" />
-              <div className="text-sm font-semibold text-[#111111]">No issues detected</div>
+              <div className="text-sm font-semibold text-[#111111]">No configured blocking issues detected</div>
               <p className="text-xs text-stone-600">
-                All AST, secret scanning, SAST, and contextual bug checks passed cleanly for this
-                diff.
+                No security, contract, migration, or static issues triggered for this diff. Execute the recommended tests before merging.
               </p>
             </Panel>
           ) : (

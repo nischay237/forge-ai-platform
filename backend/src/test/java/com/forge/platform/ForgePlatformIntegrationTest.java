@@ -6,7 +6,6 @@ import com.forge.platform.common.SecretCryptoService;
 import com.forge.platform.review.ReviewPipelineService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -32,19 +31,20 @@ class ForgePlatformIntegrationTest {
     @Autowired private SecretCryptoService cryptoService;
     @Autowired private ReviewPipelineService reviewPipelineService;
 
-    @Value("${forge.security.default-webhook-secret}")
-    private String defaultWebhookSecret;
-
     @Test
     void fullMultiTenantSecurityWebhookAstReviewAndEvaluationFlow() throws Exception {
-        // 1. Register Tenant A and Tenant B
+        // 1. Register Tenant A and Tenant B (each receives its own unique CSPRNG webhook secret)
         JsonNode tenantA = registerWorkspace("Alpha Systems", "alpha@acme.io", "StrongPass#2026");
         String tokenA = tenantA.path("accessToken").asText();
         String tenantAId = tenantA.path("tenant").path("id").asText();
         String tenantASlug = tenantA.path("tenant").path("slug").asText();
+        String tenantAWebhookSecret = tenantA.path("initialWebhookSecret").asText();
+        assertThat(tenantAWebhookSecret).startsWith("whsec_").hasSizeGreaterThan(24);
 
         JsonNode tenantB = registerWorkspace("Beta Corp", "beta@corp.io", "StrongPass#2026");
         String tokenB = tenantB.path("accessToken").asText();
+        String tenantBWebhookSecret = tenantB.path("initialWebhookSecret").asText();
+        assertThat(tenantBWebhookSecret).isNotEqualTo(tenantAWebhookSecret);
 
         // 2. Tenant A connects a repository with real Java files
         String connectPayload = objectMapper.writeValueAsString(Map.of(
@@ -93,8 +93,8 @@ class ForgePlatformIntegrationTest {
                 .content(webhookBody))
             .andExpect(status().isUnauthorized());
 
-        // Accept valid HMAC-SHA256 signature
-        String validSig = "sha256=" + cryptoService.hmacSha256Hex(webhookBody, defaultWebhookSecret);
+        // Accept valid HMAC-SHA256 signature signed with Tenant A's unique secret
+        String validSig = "sha256=" + cryptoService.hmacSha256Hex(webhookBody, tenantAWebhookSecret);
         String webhookResp = mockMvc.perform(post("/api/v1/webhooks/github/" + tenantASlug)
                 .header("X-Hub-Signature-256", validSig)
                 .header("X-GitHub-Event", "pull_request")
@@ -152,11 +152,11 @@ class ForgePlatformIntegrationTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.publishedToGithub").value(true));
 
-        // 6. Run Reproducible AI Evaluation Benchmark
+        // 6. Run Reproducible Evaluation Benchmark (12 cases)
         String evalJson = mockMvc.perform(post("/api/v1/reviews/evaluations/run")
                 .header("Authorization", "Bearer " + tokenA))
             .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.datasetSize").value(8))
+            .andExpect(jsonPath("$.datasetSize").value(12))
             .andReturn().getResponse().getContentAsString();
         JsonNode eval = objectMapper.readTree(evalJson);
         assertThat(eval.path("precision").asDouble()).isGreaterThanOrEqualTo(0.95);

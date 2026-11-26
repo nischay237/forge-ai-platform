@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import * as Tabs from '@radix-ui/react-tabs';
@@ -7,14 +7,15 @@ import {
   Background,
   Controls,
   MarkerType,
+  Position,
   ReactFlow,
   type Edge,
   type Node,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { FileCode2, GitFork, Radar, Search } from 'lucide-react';
+import { AlertTriangle, FileCode2, GitFork, Layers, Radar, Search } from 'lucide-react';
 import { api } from '../lib/api';
-import { Badge, Button, EmptyState, PageHeader, Panel, SkeletonBlock } from '../components/ui';
+import { Badge, Button, EmptyState, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
 import { severityClasses } from '../lib/utils';
 
 const LAYER_ORDER: Record<string, number> = {
@@ -39,6 +40,7 @@ const LAYER_STYLE: Record<string, { border: string; badge: string }> = {
 
 export function CodeIntelPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState('graph');
   const repos = useQuery({ queryKey: ['repos'], queryFn: api.listRepos });
 
   const defaultRepo = useMemo(() => {
@@ -47,14 +49,21 @@ export function CodeIntelPage() {
     return [...list].sort((a, b) => b.symbolCount - a.symbolCount)[0].id;
   }, [repos.data]);
   const selectedRepoId = searchParams.get('repo') || defaultRepo;
-  const [selectedNode, setSelectedNode] = useState<string>('');
+  const requestedNode = searchParams.get('node') || '';
+  const [selectedNode, setSelectedNode] = useState<string>(requestedNode);
   const [selectedFileId, setSelectedFileId] = useState<string>('');
-  const [searchInput, setSearchInput] = useState('executeTransfer');
-  const [submittedQuery, setSubmittedQuery] = useState('executeTransfer');
+  const [searchInput, setSearchInput] = useState('');
+  const [submittedQuery, setSubmittedQuery] = useState('');
 
   const graph = useQuery({
     queryKey: ['graph', selectedRepoId],
     queryFn: () => api.getDependencyGraph(selectedRepoId),
+    enabled: !!selectedRepoId,
+  });
+
+  const drift = useQuery({
+    queryKey: ['drift', selectedRepoId],
+    queryFn: () => api.getArchitectureDrift(selectedRepoId),
     enabled: !!selectedRepoId,
   });
 
@@ -65,12 +74,25 @@ export function CodeIntelPage() {
   });
 
   useEffect(() => {
-    if (graph.data?.nodes.length && !selectedNode) {
+    if (!graph.data?.nodes.length) return;
+    if (requestedNode) {
+      const matched = graph.data.nodes.find(
+        (n) =>
+          n.id === requestedNode ||
+          n.label.toLowerCase() === requestedNode.toLowerCase() ||
+          n.id.toLowerCase().endsWith('/' + requestedNode.toLowerCase())
+      );
+      if (matched) {
+        setSelectedNode(matched.id);
+        return;
+      }
+    }
+    if (!graph.data.nodes.some((n) => n.id === selectedNode)) {
       const preferred =
         graph.data.nodes.find((n) => n.incomingCount > 0)?.id ?? graph.data.nodes[0].id;
       setSelectedNode(preferred);
     }
-  }, [graph.data, selectedNode]);
+  }, [graph.data, selectedNode, requestedNode]);
 
   useEffect(() => {
     if (files.data?.length && !files.data.some((f) => f.id === selectedFileId)) {
@@ -119,7 +141,9 @@ export function CodeIntelPage() {
         const palette = LAYER_STYLE[n.layer] ?? LAYER_STYLE.DOMAIN;
         result.push({
           id: n.id,
-          position: { x: colIndex * 255 + 30, y: rowIdx * 108 + 25 },
+          sourcePosition: Position.Right,
+          targetPosition: Position.Left,
+          position: { x: colIndex * 265 + 30, y: rowIdx * 112 + 25 },
           data: {
             label: (
               <div className="text-left">
@@ -161,7 +185,7 @@ export function CodeIntelPage() {
             ),
           },
           style: {
-            width: 214,
+            width: 218,
             padding: 10,
             borderRadius: 10,
             background: isSelected ? '#111111' : isImpacted ? '#FEF2F2' : '#FFFFFF',
@@ -169,7 +193,7 @@ export function CodeIntelPage() {
               ? '1.5px solid #111111'
               : isImpacted
               ? '1.5px solid #DC2626'
-              : `1px solid #D6D3CD`,
+              : '1px solid #D6D3CD',
             boxShadow: isSelected
               ? '0 6px 20px rgba(17,17,17,0.18)'
               : isImpacted
@@ -214,12 +238,13 @@ export function CodeIntelPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="JavaParser AST & Semantic Index"
+        eyebrow="Java 21 & TypeScript/JS AST Intelligence"
         title="Code"
         accentWord="intelligence."
-        description="Inspect class-level dependency graphs on a drafting-table canvas, compute BFS change-impact blast radius before merging, explore source files in Monaco, and search AST symbols."
+        description="Inspect dependency graphs, compute transitive change-impact paths, detect circular dependencies & architecture layer drift, explore source files, and search AST symbols."
         actions={
           <select
+            aria-label="Select repository"
             value={selectedRepoId}
             onChange={(e) => {
               setSelectedNode('');
@@ -237,19 +262,31 @@ export function CodeIntelPage() {
         }
       />
 
+      {repos.isError && (
+        <ErrorBanner
+          message={repos.error instanceof Error ? repos.error.message : 'Failed to load repositories'}
+          onRetry={() => repos.refetch()}
+        />
+      )}
+
       {!selectedRepoId ? (
         <EmptyState
           icon={GitFork}
           title="No repository selected"
-          description="Connect a repository first to visualize its AST dependency graph."
+          description="Connect a repository first to visualize its AST dependency graph and architecture drift."
         />
       ) : (
-        <Tabs.Root defaultValue="graph" className="space-y-4">
-          <Tabs.List className="inline-flex items-center gap-1 p-1 rounded-lg bg-white border border-[#E5E5E0]">
+        <Tabs.Root value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+          <Tabs.List className="inline-flex flex-wrap items-center gap-1 p-1 rounded-lg bg-white border border-[#E5E5E0]">
             {[
               { value: 'graph', label: 'Dependency Graph & Impact', icon: Radar },
+              {
+                value: 'drift',
+                label: `Architecture Drift (${(drift.data?.violationCount ?? 0) + (drift.data?.cycleCount ?? 0)})`,
+                icon: Layers,
+              },
               { value: 'explorer', label: 'Source Explorer (Monaco)', icon: FileCode2 },
-              { value: 'search', label: 'Semantic & Symbol Search', icon: Search },
+              { value: 'search', label: 'Symbol Search', icon: Search },
             ].map((tab) => {
               const Icon = tab.icon;
               return (
@@ -285,10 +322,26 @@ export function CodeIntelPage() {
                 </div>
               </div>
               <div className="h-[520px] w-full bg-[#FAFAF8]">
-                {graph.isLoading ? (
+                {graph.isError ? (
+                  <div className="p-4">
+                    <ErrorBanner
+                      message={graph.error instanceof Error ? graph.error.message : 'Could not load dependency graph'}
+                      onRetry={() => graph.refetch()}
+                    />
+                  </div>
+                ) : graph.isLoading ? (
                   <SkeletonBlock className="h-full rounded-none" />
+                ) : flowNodes.length === 0 ? (
+                  <div className="p-8">
+                    <EmptyState
+                      icon={GitFork}
+                      title="No indexed AST nodes yet"
+                      description="Trigger AST re-indexing from Repositories to populate the dependency graph."
+                    />
+                  </div>
                 ) : (
                   <ReactFlow
+                    key={selectedRepoId}
                     nodes={flowNodes}
                     edges={flowEdges}
                     onNodeClick={(_, node) => setSelectedNode(node.id)}
@@ -301,7 +354,6 @@ export function CodeIntelPage() {
               </div>
             </Panel>
 
-            {/* Change Impact Inspector */}
             <Panel className="p-5 flex flex-col gap-4">
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-stone-500">
@@ -312,7 +364,14 @@ export function CodeIntelPage() {
                 </h3>
               </div>
 
-              {impact.data ? (
+              {impact.isError ? (
+                <ErrorBanner
+                  message={impact.error instanceof Error ? impact.error.message : 'Impact lookup failed'}
+                  onRetry={() => impact.refetch()}
+                />
+              ) : impact.isLoading ? (
+                <SkeletonBlock className="h-48" />
+              ) : impact.data ? (
                 <>
                   <div className="grid grid-cols-3 gap-2">
                     <div className="p-2.5 rounded-lg bg-[#FAFAF8] border border-[#EAEAE4]">
@@ -344,24 +403,26 @@ export function CodeIntelPage() {
                         Leaf component — zero upstream callers depend on this symbol.
                       </div>
                     ) : (
-                      <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                      <div className="space-y-1.5 max-h-60 overflow-y-auto">
                         {impact.data.impactedNodes.map((n) => (
                           <button
                             key={n.nodeName}
                             onClick={() => setSelectedNode(n.nodeName)}
-                            className="w-full text-left px-3 py-2 rounded-lg bg-red-50/70 hover:bg-red-50 border border-red-200/80 flex items-center justify-between gap-2 cursor-pointer transition-colors"
+                            className="w-full text-left px-3 py-2 rounded-lg bg-red-50/70 hover:bg-red-50 border border-red-200/80 space-y-1 cursor-pointer transition-colors"
                           >
-                            <div className="min-w-0">
-                              <div className="text-xs font-mono font-semibold text-red-900 truncate">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-mono font-semibold text-red-900 truncate">
                                 {n.nodeName}
-                              </div>
-                              <div className="text-[10px] font-mono text-stone-500 truncate">
-                                {n.filePath}
-                              </div>
+                              </span>
+                              <span className="text-[10px] font-mono text-red-700 shrink-0">
+                                hop {n.hopDistance} · {n.relationship}
+                              </span>
                             </div>
-                            <span className="text-[10px] font-mono text-red-700 shrink-0">
-                              hop {n.hopDistance} · {n.relationship}
-                            </span>
+                            {n.impactReason && (
+                              <div className="text-[10.5px] text-stone-600 leading-snug">
+                                {n.impactReason}
+                              </div>
+                            )}
                           </button>
                         ))}
                       </div>
@@ -390,41 +451,121 @@ export function CodeIntelPage() {
                   </div>
                 </>
               ) : (
-                <SkeletonBlock className="h-48" />
+                <div className="text-xs text-stone-500 p-3 rounded-lg bg-[#FAFAF8] border border-[#EAEAE4]">
+                  Select a node in the dependency graph to inspect its transitive blast radius.
+                </div>
               )}
             </Panel>
           </Tabs.Content>
 
-          {/* TAB 2: Source File Explorer + Dark Code Monaco Viewer */}
+          {/* TAB 2: Architecture Drift & Circular Dependencies */}
+          <Tabs.Content value="drift" className="space-y-4">
+            {drift.isError ? (
+              <ErrorBanner
+                message={drift.error instanceof Error ? drift.error.message : 'Architecture drift analysis failed'}
+                onRetry={() => drift.refetch()}
+              />
+            ) : drift.isLoading || !drift.data ? (
+              <SkeletonBlock className="h-56" />
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <Panel className="p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-[#111111]">
+                      Layered Architecture Boundary Violations ({drift.data.violationCount})
+                    </h3>
+                    <span className="text-[11px] font-mono text-stone-500">
+                      {drift.data.totalEdgesAnalyzed} edges checked
+                    </span>
+                  </div>
+                  {drift.data.violations.length === 0 ? (
+                    <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-900">
+                      Zero layer boundary violations detected across indexed dependency edges.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {drift.data.violations.map((v, idx) => (
+                        <div key={idx} className="p-3 rounded-lg bg-red-50/70 border border-red-200 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Badge className={severityClasses(v.severity)}>{v.severity}</Badge>
+                            <span className="font-mono text-xs font-semibold text-[#111111]">
+                              {v.ruleId}: {v.sourceLayer} → {v.targetLayer}
+                            </span>
+                          </div>
+                          <p className="text-xs text-stone-700">{v.explanation}</p>
+                          <div className="text-[10.5px] font-mono text-stone-500">
+                            {v.sourceFile} → {v.targetFile ?? v.targetNode}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Panel>
+
+                <Panel className="p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-[#111111] flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-700" />
+                      Circular Dependencies ({drift.data.cycleCount})
+                    </h3>
+                  </div>
+                  {drift.data.circularDependencies.length === 0 ? (
+                    <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-900">
+                      Acyclic dependency graph — zero circular module references detected.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {drift.data.circularDependencies.map((cycle, idx) => (
+                        <div key={idx} className="p-3 rounded-lg bg-amber-50 border border-amber-200 font-mono text-xs text-amber-950">
+                          {cycle.join(' → ')}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Panel>
+              </div>
+            )}
+          </Tabs.Content>
+
+          {/* TAB 3: Source File Explorer + Dark Code Monaco Viewer */}
           <Tabs.Content value="explorer" className="grid grid-cols-1 xl:grid-cols-4 gap-5">
             <Panel className="overflow-hidden">
               <div className="px-4 py-3 border-b border-[#EFEFEA] bg-[#FAFAF8] text-xs font-semibold text-[#111111]">
                 Indexed Files ({files.data?.length ?? 0})
               </div>
               <div className="divide-y divide-[#EFEFEA] max-h-[540px] overflow-y-auto">
-                {(files.data ?? []).map((f) => (
-                  <button
-                    key={f.id}
-                    onClick={() => setSelectedFileId(f.id)}
-                    className={`w-full text-left px-3.5 py-2.5 transition-colors cursor-pointer ${
-                      f.id === selectedFileId
-                        ? 'bg-[#111111] text-white'
-                        : 'hover:bg-[#FAFAF8] text-[#111111]'
-                    }`}
-                  >
-                    <div className="text-xs font-mono font-medium truncate">
-                      {f.filePath.split('/').pop()}
-                    </div>
-                    <div
-                      className={`flex items-center justify-between text-[10px] font-mono mt-0.5 ${
-                        f.id === selectedFileId ? 'text-stone-300' : 'text-stone-500'
+                {files.isLoading ? (
+                  <div className="p-3 space-y-2">
+                    <SkeletonBlock className="h-10" />
+                    <SkeletonBlock className="h-10" />
+                  </div>
+                ) : (files.data ?? []).length === 0 ? (
+                  <div className="p-4 text-xs text-stone-500">No source files indexed for this repository.</div>
+                ) : (
+                  (files.data ?? []).map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => setSelectedFileId(f.id)}
+                      className={`w-full text-left px-3.5 py-2.5 transition-colors cursor-pointer ${
+                        f.id === selectedFileId
+                          ? 'bg-[#111111] text-white'
+                          : 'hover:bg-[#FAFAF8] text-[#111111]'
                       }`}
                     >
-                      <span className="truncate max-w-[160px]">{f.filePath}</span>
-                      <span>cc:{f.complexityScore}</span>
-                    </div>
-                  </button>
-                ))}
+                      <div className="text-xs font-mono font-medium truncate">
+                        {f.filePath.split('/').pop()}
+                      </div>
+                      <div
+                        className={`flex items-center justify-between text-[10px] font-mono mt-0.5 ${
+                          f.id === selectedFileId ? 'text-stone-300' : 'text-stone-500'
+                        }`}
+                      >
+                        <span className="truncate max-w-[160px]">{f.filePath}</span>
+                        <span>cc:{f.complexityScore}</span>
+                      </div>
+                    </button>
+                  ))
+                )}
               </div>
             </Panel>
 
@@ -441,7 +582,16 @@ export function CodeIntelPage() {
                 )}
               </div>
               <div className="h-[540px] bg-[#141416]">
-                {fileDetail.data ? (
+                {fileDetail.isError ? (
+                  <div className="p-4 bg-white h-full">
+                    <ErrorBanner
+                      message={fileDetail.error instanceof Error ? fileDetail.error.message : 'Failed to load file'}
+                      onRetry={() => fileDetail.refetch()}
+                    />
+                  </div>
+                ) : fileDetail.isLoading ? (
+                  <SkeletonBlock className="h-full rounded-none" />
+                ) : fileDetail.data ? (
                   <Editor
                     height="100%"
                     language={fileDetail.data.language}
@@ -457,27 +607,28 @@ export function CodeIntelPage() {
                     }}
                   />
                 ) : (
-                  <SkeletonBlock className="h-full rounded-none" />
+                  <div className="p-8 text-xs text-stone-400">Select an indexed file from the sidebar to inspect its source.</div>
                 )}
               </div>
             </Panel>
           </Tabs.Content>
 
-          {/* TAB 3: Semantic & Symbol Search */}
+          {/* TAB 4: Symbol Search */}
           <Tabs.Content value="search" className="space-y-4">
             <Panel className="p-3.5">
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  setSubmittedQuery(searchInput);
+                  setSubmittedQuery(searchInput.trim());
                 }}
                 className="flex items-center gap-2.5"
               >
                 <Search className="w-4 h-4 text-stone-400 shrink-0 ml-1" />
                 <input
+                  aria-label="Search AST symbols"
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
-                  placeholder="Search symbols, methods, or concepts (e.g. executeTransfer, idempotency, velocity)..."
+                  placeholder="Search indexed classes, methods, functions, or code terms..."
                   className="flex-1 bg-transparent text-sm text-[#111111] placeholder:text-stone-400 focus:outline-none"
                 />
                 <Button type="submit" size="sm">
@@ -486,7 +637,20 @@ export function CodeIntelPage() {
               </form>
             </Panel>
 
-            {searchRes.data && (
+            {searchRes.isError && (
+              <ErrorBanner
+                message={searchRes.error instanceof Error ? searchRes.error.message : 'Search failed'}
+                onRetry={() => searchRes.refetch()}
+              />
+            )}
+
+            {!submittedQuery ? (
+              <EmptyState
+                icon={Search}
+                title="Search repository AST symbols"
+                description="Enter a class name, method, or keyword above to locate indexed definitions and jump straight to Source Explorer."
+              />
+            ) : searchRes.data ? (
               <div className="space-y-3">
                 <div className="rounded-xl bg-[#FAFAF8] border border-[#DCDCD5] px-4 py-3 text-xs text-[#111111] leading-relaxed">
                   {searchRes.data.synthesizedAnswer}
@@ -498,9 +662,18 @@ export function CodeIntelPage() {
                         <Badge className="bg-stone-100 text-[#111111] border-[#DCDCD5] font-mono">
                           {hit.symbolKind}
                         </Badge>
-                        <span className="text-xs font-mono font-semibold text-[#111111]">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (hit.fileId) {
+                              setSelectedFileId(hit.fileId);
+                              setActiveTab('explorer');
+                            }
+                          }}
+                          className="text-xs font-mono font-semibold text-[#111111] hover:underline cursor-pointer"
+                        >
                           {hit.symbolName}
-                        </span>
+                        </button>
                         <span className="text-[11px] font-mono text-stone-500">
                           {hit.filePath}:{hit.lineNumber}
                         </span>
@@ -515,7 +688,7 @@ export function CodeIntelPage() {
                   </Panel>
                 ))}
               </div>
-            )}
+            ) : null}
           </Tabs.Content>
         </Tabs.Root>
       )}

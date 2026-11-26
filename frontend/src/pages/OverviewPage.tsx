@@ -1,4 +1,4 @@
-import React from 'react';
+import type { ComponentType } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import {
@@ -14,16 +14,24 @@ import {
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { api } from '../lib/api';
+import { useForgeStore } from '../lib/store';
 import { Badge, Button, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
-import { formatRelativeTime, severityClasses, statusClasses } from '../lib/utils';
+import { formatRelativeTime, mergeDecisionClasses, severityClasses, statusClasses } from '../lib/utils';
 
 export function OverviewPage() {
   const navigate = useNavigate();
+  const user = useForgeStore((s) => s.user);
+  const isAdmin = user?.role === 'OWNER' || user?.role === 'ADMIN';
 
   const overview = useQuery({ queryKey: ['overview'], queryFn: api.getOverview });
+  const predOverview = useQuery({ queryKey: ['prediction-overview'], queryFn: api.getPredictionOverview });
   const reviews = useQuery({ queryKey: ['reviews'], queryFn: () => api.listReviews() });
   const builds = useQuery({ queryKey: ['ci'], queryFn: () => api.listCiBuilds() });
-  const audits = useQuery({ queryKey: ['audit'], queryFn: () => api.listAuditLogs() });
+  const audits = useQuery({
+    queryKey: ['audit'],
+    queryFn: () => api.listAuditLogs(),
+    enabled: isAdmin,
+  });
 
   if (overview.isError) {
     return (
@@ -41,12 +49,15 @@ export function OverviewPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Engineering Control Plane"
+        eyebrow="Change Impact & Risk Control Plane"
         title="Workspace"
         accentWord="overview."
-        description="Live code intelligence, pull request risk telemetry, security posture, and CI reliability computed directly from persisted workspace events."
+        description="Live code intelligence, deterministic PR risk verdicts (PASS/WARN/BLOCK), security posture, and CI reliability computed from persisted workspace telemetry."
         actions={
           <>
+            <Button variant="secondary" onClick={() => navigate('/predictions')}>
+              Predictive Forecasts
+            </Button>
             <Button variant="secondary" onClick={() => navigate('/code-intel')}>
               Explore AST Graph
             </Button>
@@ -55,7 +66,6 @@ export function OverviewPage() {
         }
       />
 
-      {/* Primary KPI Hairline Grid */}
       {overview.isLoading || !data ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
           {Array.from({ length: 4 }).map((_, i) => (
@@ -82,13 +92,13 @@ export function OverviewPage() {
             <KpiCell
               label="Open Security Alerts"
               value={String(data.openSecurityIssues)}
-              meta="Gitleaks secrets & Semgrep SAST"
+              meta="Secrets, Entropy, SAST, IaC & SCA"
               icon={ShieldAlert}
               accent={data.openSecurityIssues > 0 ? 'text-red-700' : 'text-emerald-700'}
               onClick={() => navigate('/security')}
             />
             <KpiCell
-              label="CI Success · AI Eval F1"
+              label="CI Success · Eval F1"
               value={`${data.ciSuccessRatePct}%`}
               meta={
                 data.latestEvalF1 != null
@@ -103,7 +113,6 @@ export function OverviewPage() {
         </Panel>
       )}
 
-      {/* Live Infrastructure Telemetry Strip */}
       {data && (
         <Panel className="px-4 py-3 bg-[#FAFAF8] flex flex-wrap items-center justify-between gap-4 text-xs">
           <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-stone-600">
@@ -123,7 +132,7 @@ export function OverviewPage() {
             </span>
             <span className="flex items-center gap-1.5 font-mono text-[11px] tabular-nums">
               <Cpu className="w-3.5 h-3.5 text-stone-500" />
-              Outbox Published:{' '}
+              Tenant Outbox Published:{' '}
               <span className="text-[#111111] font-medium">
                 {String(data.infrastructureTelemetry.published ?? 0)}
               </span>
@@ -145,15 +154,39 @@ export function OverviewPage() {
         </Panel>
       )}
 
-      {/* Main Split Grid: Recent PR Reviews + Findings by Severity */}
+      {predOverview.data && (
+        <Panel className="px-4 py-3 bg-white flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.1em] px-2 py-0.5 rounded bg-[#111111] text-white">
+              Predictive Engine
+            </span>
+            <span className="text-stone-700">
+              <strong className="font-mono text-[#111111]">{predOverview.data.totalPredictions}</strong> PR forecast(s)
+              {' · '}
+              <strong className="font-mono text-[#111111]">{predOverview.data.highRiskPredictions}</strong> High/Critical
+              {' · '}
+              <strong className="font-mono text-[#111111]">{predOverview.data.totalDeployments}</strong> deploy(s) (
+              <strong className="font-mono text-[#111111]">{predOverview.data.totalRollbacks}</strong> rollback(s))
+              {' · '}
+              <strong className="font-mono text-[#111111]">{predOverview.data.totalConfirmedIncidents}</strong> incident(s)
+            </span>
+          </div>
+          <Link
+            to="/predictions"
+            className="text-xs font-medium text-[#111111] hover:underline inline-flex items-center gap-1"
+          >
+            Open Predictive Intelligence <ArrowUpRight className="w-3.5 h-3.5" />
+          </Link>
+        </Panel>
+      )}
+
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
-        {/* Recent PR Reviews */}
         <Panel className="xl:col-span-2 overflow-hidden">
           <div className="px-5 py-3.5 border-b border-[#EFEFEA] bg-[#FAFAF8] flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold text-[#111111]">Recent Pull Request Reviews</h2>
               <p className="text-[11px] text-stone-500">
-                AST-contextual analysis with mandatory human approval gates
+                Deterministic Change Risk verdicts with AST impact &amp; contract analysis
               </p>
             </div>
             <Link
@@ -164,7 +197,14 @@ export function OverviewPage() {
             </Link>
           </div>
           <div className="divide-y divide-[#EFEFEA]">
-            {reviews.isLoading ? (
+            {reviews.isError ? (
+              <div className="p-4">
+                <ErrorBanner
+                  message={reviews.error instanceof Error ? reviews.error.message : 'Could not load reviews'}
+                  onRetry={() => reviews.refetch()}
+                />
+              </div>
+            ) : reviews.isLoading ? (
               <div className="p-4 space-y-2.5">
                 <SkeletonBlock className="h-14" />
                 <SkeletonBlock className="h-14" />
@@ -199,10 +239,9 @@ export function OverviewPage() {
                     {r.criticalCount > 0 && (
                       <Badge className={severityClasses('CRITICAL')}>{r.criticalCount} crit</Badge>
                     )}
-                    {r.highCount > 0 && (
-                      <Badge className={severityClasses('HIGH')}>{r.highCount} high</Badge>
+                    {r.mergeDecision && (
+                      <Badge className={mergeDecisionClasses(r.mergeDecision)}>{r.mergeDecision}</Badge>
                     )}
-                    <Badge className={statusClasses(r.status)}>{r.status}</Badge>
                     <span className="font-mono text-xs font-semibold text-[#111111] tabular-nums w-12 text-right">
                       {r.riskScore}/100
                     </span>
@@ -213,7 +252,6 @@ export function OverviewPage() {
           </div>
         </Panel>
 
-        {/* Findings by Severity Bar Chart */}
         <Panel className="p-5 flex flex-col justify-between">
           <div>
             <h2 className="text-sm font-semibold text-[#111111]">Findings by Severity</h2>
@@ -273,7 +311,6 @@ export function OverviewPage() {
         </Panel>
       </div>
 
-      {/* Bottom Split: Recent CI Pipelines + Immutable Audit Trail */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
         <Panel className="overflow-hidden">
           <div className="px-5 py-3.5 border-b border-[#EFEFEA] bg-[#FAFAF8] flex items-center justify-between">
@@ -286,55 +323,79 @@ export function OverviewPage() {
             </Link>
           </div>
           <div className="divide-y divide-[#EFEFEA]">
-            {(builds.data ?? []).slice(0, 4).map((b) => (
-              <Link
-                key={b.id}
-                to="/ci"
-                className="px-5 py-3 flex items-center justify-between gap-3 hover:bg-[#FAFAF8] transition-colors"
-              >
-                <div className="min-w-0">
-                  <div className="text-xs font-medium text-[#111111] truncate">{b.pipelineName}</div>
-                  <div className="text-[11px] text-stone-500 font-mono truncate mt-0.5">
-                    {b.repositoryName} · {b.branch} · {b.durationSeconds}s
+            {builds.isError ? (
+              <div className="p-4">
+                <ErrorBanner
+                  message={builds.error instanceof Error ? builds.error.message : 'Failed to load CI builds'}
+                  onRetry={() => builds.refetch()}
+                />
+              </div>
+            ) : (
+              (builds.data ?? []).slice(0, 4).map((b) => (
+                <Link
+                  key={b.id}
+                  to="/ci"
+                  className="px-5 py-3 flex items-center justify-between gap-3 hover:bg-[#FAFAF8] transition-colors"
+                >
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium text-[#111111] truncate">{b.pipelineName}</div>
+                    <div className="text-[11px] text-stone-500 font-mono truncate mt-0.5">
+                      {b.repositoryName} · {b.branch} · {b.durationSeconds}s
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {b.failureCategory && b.failureCategory !== 'NONE' && (
-                    <span className="text-[10px] font-mono text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
-                      {b.failureCategory}
-                    </span>
-                  )}
-                  <Badge className={statusClasses(b.status)}>{b.status}</Badge>
-                </div>
-              </Link>
-            ))}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {b.failureCategory && b.failureCategory !== 'NONE' && (
+                      <span className="text-[10px] font-mono text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                        {b.failureCategory}
+                      </span>
+                    )}
+                    <Badge className={statusClasses(b.status)}>{b.status}</Badge>
+                  </div>
+                </Link>
+              ))
+            )}
           </div>
         </Panel>
 
         <Panel className="overflow-hidden">
           <div className="px-5 py-3.5 border-b border-[#EFEFEA] bg-[#FAFAF8] flex items-center justify-between">
             <h2 className="text-sm font-semibold text-[#111111]">Recent Workspace Activity</h2>
-            <Link to="/audit" className="text-xs font-medium text-[#111111] hover:underline">
-              Full audit log
-            </Link>
+            {isAdmin && (
+              <Link to="/audit" className="text-xs font-medium text-[#111111] hover:underline">
+                Full audit log
+              </Link>
+            )}
           </div>
           <div className="divide-y divide-[#EFEFEA]">
-            {(audits.data ?? []).slice(0, 5).map((a) => (
-              <div key={a.id} className="px-5 py-3 flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] font-semibold text-[#111111]">
-                      {a.action}
-                    </span>
-                    <span className="text-[11px] text-stone-500">{a.actorEmail}</span>
-                  </div>
-                  <p className="text-xs text-stone-600 truncate mt-0.5">{a.details}</p>
-                </div>
-                <span className="text-[11px] font-mono text-stone-500 shrink-0">
-                  {formatRelativeTime(a.createdAt)}
-                </span>
+            {!isAdmin ? (
+              <div className="p-5 text-xs text-stone-500">
+                Audit trail visibility is restricted to workspace OWNER and ADMIN roles.
               </div>
-            ))}
+            ) : audits.isError ? (
+              <div className="p-4">
+                <ErrorBanner
+                  message={audits.error instanceof Error ? audits.error.message : 'Failed to load audit logs'}
+                  onRetry={() => audits.refetch()}
+                />
+              </div>
+            ) : (
+              (audits.data ?? []).slice(0, 5).map((a) => (
+                <div key={a.id} className="px-5 py-3 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[11px] font-semibold text-[#111111]">
+                        {a.action}
+                      </span>
+                      <span className="text-[11px] text-stone-500">{a.actorEmail}</span>
+                    </div>
+                    <p className="text-xs text-stone-600 truncate mt-0.5">{a.details}</p>
+                  </div>
+                  <span className="text-[11px] font-mono text-stone-500 shrink-0">
+                    {formatRelativeTime(a.createdAt)}
+                  </span>
+                </div>
+              ))
+            )}
           </div>
         </Panel>
       </div>
@@ -353,7 +414,7 @@ function KpiCell({
   label: string;
   value: string;
   meta: string;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: ComponentType<{ className?: string }>;
   accent?: string;
   onClick: () => void;
 }) {

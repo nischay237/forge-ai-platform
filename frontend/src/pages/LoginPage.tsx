@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Activity, ArrowRight, Check, Lock, Network, ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
@@ -7,8 +7,8 @@ import { Button, ForgeMark } from '../components/ui';
 
 export function LoginPage() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [email, setEmail] = useState('nischay@forge.dev');
-  const [password, setPassword] = useState('ForgeUser@2026');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [workspaceName, setWorkspaceName] = useState('');
   const [fullName, setFullName] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -17,7 +17,7 @@ export function LoginPage() {
   const setSession = useForgeStore((s) => s.setSession);
   const navigate = useNavigate();
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
@@ -37,7 +37,6 @@ export function LoginPage() {
 
   return (
     <div className="min-h-screen bg-white text-[#111111] flex flex-col">
-      {/* Crisp Minimal Top Nav */}
       <header className="h-14 border-b border-stone-200 px-6 sm:px-10 flex items-center justify-between bg-white">
         <div className="flex items-center gap-2.5">
           <ForgeMark className="w-6 h-6" />
@@ -46,12 +45,11 @@ export function LoginPage() {
         <div className="hidden sm:flex items-center gap-6 text-xs font-mono text-stone-500">
           <span>Java 21 LTS</span>
           <span>Spring Boot 3.5</span>
-          <span>Kafka Outbox</span>
-          <span>JavaParser AST</span>
+          <span>Deterministic Risk Engine</span>
+          <span>AST + Security Intel</span>
         </div>
       </header>
 
-      {/* Luminous Architectural Spectrum Grid Hero + Clean Auth Sheet */}
       <div
         className="flex-1 grid lg:grid-cols-12 items-center px-6 sm:px-12 py-10 gap-8 lg:gap-10 relative overflow-hidden"
         style={{
@@ -68,24 +66,23 @@ export function LoginPage() {
             '56px 56px, 56px 56px, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%',
         }}
       >
-        {/* Left: Crisp Stepped Pure-White Editorial Cutout + 3 Capability Cards */}
         <div className="lg:col-span-7 max-w-2xl space-y-5">
           <div className="bg-white p-8 sm:p-10 shadow-[0_20px_60px_rgba(15,23,42,0.12)] border border-white/80 space-y-5">
             <div className="inline-flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.12em] text-stone-500">
               <span className="w-2 h-2 rounded-full bg-emerald-500" />
-              Automated Code Review &amp; Release Safety · Java 21 + Spring Boot
+              Change Impact &amp; Risk Intelligence · Java 21 + Spring Boot
             </div>
 
             <h1 className="text-3xl sm:text-[42px] font-medium tracking-[-0.04em] leading-[1.08] text-[#111111]">
               <span className="bg-[#EFE8FF]/85 px-1.5 box-decoration-clone">
-                Catch bugs, leaks, and breaking changes before you merge.
+                Understand the impact of every code change before it reaches production.
               </span>
             </h1>
 
             <p className="text-sm sm:text-[15px] text-stone-700 leading-relaxed max-w-xl">
-              Connect any real GitHub Pull Request. Forge scans the real diff for security bugs &amp;
-              leaked API keys, maps affected services, and posts comments to GitHub only after human
-              approval.
+              Deterministic AST dependency impact, OpenAPI &amp; SQL migration compatibility,
+              entropy &amp; SCA security scanning, and Policy-as-Code merge decisions
+              (PASS / WARN / BLOCK) backed by explicit evidence.
             </p>
           </div>
 
@@ -94,20 +91,20 @@ export function LoginPage() {
               {
                 icon: Network,
                 iconColor: 'text-sky-700',
-                title: 'See Impact',
-                items: ['Scan codebase structure', 'Spot affected services', 'Show tests to re-run'],
+                title: 'Change Impact',
+                items: ['Java 21 & TS/JS AST', 'Transitive blast radius', 'Targeted test selection'],
               },
               {
                 icon: ShieldCheck,
                 iconColor: 'text-emerald-700',
-                title: 'Protect',
-                items: ['Hide leaked API keys', 'Block prompt attacks', 'Human sign-off gate'],
+                title: 'Contract & Security',
+                items: ['API & SQL migration checks', 'Secrets, SCA, SBOM, SARIF', 'Prompt-injection guard'],
               },
               {
                 icon: Activity,
                 iconColor: 'text-amber-700',
-                title: 'Verify',
-                items: ['Live GitHub PR sync', '0% false alarms (8/8)', 'Clean modular tests'],
+                title: 'Explainable Risk',
+                items: ['Policy-as-Code PASS/WARN/BLOCK', 'Human sign-off gate', 'Per-tenant HMAC webhooks'],
               },
             ].map((card) => {
               const Icon = card.icon;
@@ -137,7 +134,6 @@ export function LoginPage() {
           </div>
         </div>
 
-        {/* Right: Crisp Pure-White Sign-In Sheet */}
         <div className="lg:col-span-5 max-w-md w-full mx-auto">
           <div className="rounded-2xl bg-white border border-white p-7 sm:p-8 shadow-[0_20px_50px_rgba(15,23,42,0.14)] space-y-5">
             <div>
@@ -146,8 +142,8 @@ export function LoginPage() {
               </h2>
               <p className="text-xs text-stone-500 mt-1">
                 {mode === 'login'
-                  ? 'Demo credentials pre-filled for Acme FinTech Core (OWNER).'
-                  : 'Provision a new multi-tenant workspace backed by JWT & RBAC.'}
+                  ? 'Authenticate with your workspace email and password.'
+                  : 'Provision a new multi-tenant workspace with a unique per-tenant webhook secret.'}
               </p>
             </div>
 
@@ -155,10 +151,11 @@ export function LoginPage() {
               {mode === 'register' && (
                 <>
                   <div>
-                    <label className="block text-xs font-medium text-stone-700 mb-1">
+                    <label htmlFor="forge-workspace" className="block text-xs font-medium text-stone-700 mb-1">
                       Workspace Name
                     </label>
                     <input
+                      id="forge-workspace"
                       required
                       value={workspaceName}
                       onChange={(e) => setWorkspaceName(e.target.value)}
@@ -167,14 +164,15 @@ export function LoginPage() {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-stone-700 mb-1">
+                    <label htmlFor="forge-fullname" className="block text-xs font-medium text-stone-700 mb-1">
                       Full Name
                     </label>
                     <input
+                      id="forge-fullname"
                       required
                       value={fullName}
                       onChange={(e) => setFullName(e.target.value)}
-                      placeholder="Nischay Srivastava"
+                      placeholder="Your full name"
                       className="w-full h-9 px-3 rounded-md bg-[#FAFAF8] border border-[#DCDCD5] text-xs text-[#111111] focus:outline-none focus:border-[#111111]"
                     />
                   </div>
@@ -182,10 +180,15 @@ export function LoginPage() {
               )}
 
               <div>
-                <label className="block text-xs font-medium text-stone-700 mb-1">Work Email</label>
+                <label htmlFor="forge-email" className="block text-xs font-medium text-stone-700 mb-1">
+                  Work Email
+                </label>
                 <input
+                  id="forge-email"
                   required
                   type="email"
+                  autoComplete="email"
+                  placeholder="engineer@company.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full h-9 px-3 rounded-md bg-[#FAFAF8] border border-[#DCDCD5] text-xs font-mono text-[#111111] focus:outline-none focus:border-[#111111]"
@@ -193,10 +196,15 @@ export function LoginPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-stone-700 mb-1">Password</label>
+                <label htmlFor="forge-password" className="block text-xs font-medium text-stone-700 mb-1">
+                  Password
+                </label>
                 <input
+                  id="forge-password"
                   required
                   type="password"
+                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                  placeholder="Minimum 8 characters"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full h-9 px-3 rounded-md bg-[#FAFAF8] border border-[#DCDCD5] text-xs font-mono text-[#111111] focus:outline-none focus:border-[#111111]"
@@ -204,7 +212,7 @@ export function LoginPage() {
               </div>
 
               {error && (
-                <div className="p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-700">
+                <div role="alert" className="p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-700">
                   {error}
                 </div>
               )}
@@ -225,12 +233,12 @@ export function LoginPage() {
             <div className="pt-3 border-t border-[#EFEFEA] text-center text-xs text-stone-500">
               {mode === 'login' ? (
                 <>
-                  Want to verify multi-tenant isolation?{' '}
+                  Need a new tenant workspace?{' '}
                   <button
+                    type="button"
                     onClick={() => {
                       setMode('register');
-                      setEmail('');
-                      setPassword('');
+                      setError(null);
                     }}
                     className="text-[#111111] font-semibold hover:underline cursor-pointer"
                   >
@@ -241,10 +249,10 @@ export function LoginPage() {
                 <>
                   Already have a workspace?{' '}
                   <button
+                    type="button"
                     onClick={() => {
                       setMode('login');
-                      setEmail('nischay@forge.dev');
-                      setPassword('ForgeUser@2026');
+                      setError(null);
                     }}
                     className="text-[#111111] font-semibold hover:underline cursor-pointer"
                   >

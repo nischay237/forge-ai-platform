@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -45,6 +46,12 @@ public class OutboxEvent {
     @Column(name = "last_error", columnDefinition = "TEXT")
     private String lastError;
 
+    @Column(name = "locked_by")
+    private String lockedBy;
+
+    @Column(name = "locked_until")
+    private Instant lockedUntil;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -70,18 +77,29 @@ public class OutboxEvent {
         return event;
     }
 
+    public void claim(String workerId, Duration leaseDuration) {
+        this.status = "PROCESSING";
+        this.lockedBy = workerId;
+        this.lockedUntil = Instant.now().plus(leaseDuration);
+    }
+
     public void markPublished() {
         this.status = "PUBLISHED";
         this.publishedAt = Instant.now();
+        this.lockedBy = null;
+        this.lockedUntil = null;
         this.lastError = null;
     }
 
     public void recordFailure(String error, int maxRetries) {
         this.retryCount++;
+        this.lockedBy = null;
+        this.lockedUntil = null;
         this.lastError = error != null && error.length() > 1000 ? error.substring(0, 1000) : error;
         if (this.retryCount >= maxRetries) {
             this.status = "DEAD_LETTER";
         } else {
+            this.status = "PENDING";
             long backoffSeconds = (long) Math.pow(2, this.retryCount);
             this.nextAttemptAt = Instant.now().plusSeconds(backoffSeconds);
         }
@@ -98,6 +116,8 @@ public class OutboxEvent {
     public int getRetryCount() { return retryCount; }
     public Instant getNextAttemptAt() { return nextAttemptAt; }
     public String getLastError() { return lastError; }
+    public String getLockedBy() { return lockedBy; }
+    public Instant getLockedUntil() { return lockedUntil; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getPublishedAt() { return publishedAt; }
 }

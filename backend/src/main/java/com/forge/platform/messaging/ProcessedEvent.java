@@ -21,6 +21,12 @@ public class ProcessedEvent {
     @Column(name = "event_type", nullable = false)
     private String eventType;
 
+    @Column(nullable = false)
+    private String status = "COMPLETED";
+
+    @Column(name = "lease_until")
+    private Instant leaseUntil;
+
     @Column(name = "processed_at", nullable = false)
     private Instant processedAt;
 
@@ -30,11 +36,14 @@ public class ProcessedEvent {
         this.eventKey = eventKey;
         this.tenantId = tenantId;
         this.eventType = eventType;
+        this.status = "COMPLETED";
         this.processedAt = Instant.now();
     }
 
     public String getEventKey() { return eventKey; }
     public String getTenantId() { return tenantId; }
     public String getEventType() { return eventType; }
+    public String getStatus() { return status; }
+    public Instant getLeaseUntil() { return leaseUntil; }
     public Instant getProcessedAt() { return processedAt; }
 }

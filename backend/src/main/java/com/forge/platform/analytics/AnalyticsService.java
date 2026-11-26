@@ -150,7 +150,7 @@ public class AnalyticsService {
 
         Map<String, Object> infra = new LinkedHashMap<>();
         infra.put("cacheBackend", cacheService.backendName());
-        infra.putAll(outboxService.stats());
+        infra.putAll(outboxService.statsForTenant(tenantId));
 
         return new OverviewAnalyticsDto(
             repos.size(),

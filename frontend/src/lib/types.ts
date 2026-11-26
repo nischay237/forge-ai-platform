@@ -23,8 +23,21 @@ export interface TenantDto {
 
 export interface AuthResponse {
   accessToken: string;
+  refreshToken: string;
   tokenType: string;
+  expiresInSeconds: number;
   user: UserDto;
+  tenant: TenantDto;
+  initialWebhookSecret?: string | null;
+}
+
+export interface SessionResponse {
+  user: UserDto;
+  tenant: TenantDto;
+}
+
+export interface WebhookSecretRotationResponse {
+  webhookSecret: string;
   tenant: TenantDto;
 }
 
@@ -96,6 +109,7 @@ export interface DependencyGraphResponse {
   repositoryName: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
+  circularDependencies?: string[][];
 }
 
 export interface ImpactedNode {
@@ -104,6 +118,7 @@ export interface ImpactedNode {
   hopDistance: number;
   relationship: string;
   isTest: boolean;
+  impactReason?: string;
 }
 
 export interface ChangeImpactResponse {
@@ -114,6 +129,29 @@ export interface ChangeImpactResponse {
   riskLevel: string;
   impactedNodes: ImpactedNode[];
   directDependencies: string[];
+}
+
+export interface ArchitectureDriftViolation {
+  ruleId: string;
+  severity: string;
+  sourceNode: string;
+  sourceFile: string;
+  sourceLayer: string;
+  targetNode: string;
+  targetFile: string | null;
+  targetLayer: string;
+  dependencyType: string;
+  explanation: string;
+}
+
+export interface ArchitectureDriftResponse {
+  repositoryId: string;
+  repositoryName: string;
+  totalEdgesAnalyzed: number;
+  violationCount: number;
+  cycleCount: number;
+  violations: ArchitectureDriftViolation[];
+  circularDependencies: string[][];
 }
 
 export interface CodeSearchResponse {
@@ -130,6 +168,50 @@ export interface CodeSearchResponse {
   }>;
 }
 
+export interface RiskFactor {
+  category: string;
+  title: string;
+  severity: string;
+  riskPoints: number;
+  confidence: number;
+  evidence: string;
+  explanation: string;
+  policyRule: string;
+}
+
+export interface ChangeRiskAssessment {
+  riskScore: number;
+  mergeDecision: 'PASS' | 'WARN' | 'BLOCK';
+  policyVersion: number;
+  decisionSummary: string;
+  safetyDisclaimer: string;
+  triggeredPolicies: string[];
+  factors: RiskFactor[];
+  impactedModulesCount: number;
+  breakingApiCount: number;
+  migrationRiskCount: number;
+  criticalSecurityCount: number;
+}
+
+export interface SelectedTest {
+  testName: string;
+  testFilePath: string;
+  selectionReason: string;
+  relatedChangedFile: string;
+  priority: string;
+  suggestedCommand: string;
+  executionStatus: string;
+}
+
+export interface TestSelectionPlan {
+  executionStatus: string;
+  disclaimer: string;
+  prIncludesTestChanges: boolean;
+  recommendedCount: number;
+  selectedTests: SelectedTest[];
+  suggestedCommands: string[];
+}
+
 export interface ReviewSummaryDto {
   id: string;
   repositoryId: string;
@@ -143,6 +225,7 @@ export interface ReviewSummaryDto {
   status: string;
   currentStage: string;
   riskScore: number;
+  mergeDecision: 'PASS' | 'WARN' | 'BLOCK';
   summary: string | null;
   promptVersion: string;
   modelUsed: string;
@@ -150,6 +233,7 @@ export interface ReviewSummaryDto {
   estimatedCostUsd: number;
   processingMs: number;
   publishedToGithub: boolean;
+  publishStatus: string;
   githubCommentUrl: string | null;
   findingCount: number;
   criticalCount: number;
@@ -171,6 +255,7 @@ export interface ReviewFinding {
   explanation: string;
   evidence: string | null;
   suggestedPatch: string | null;
+  fingerprint?: string | null;
   status: 'PENDING' | 'APPROVED' | 'DISMISSED';
   reviewedBy: string | null;
   reviewedAt: string | null;
@@ -181,14 +266,18 @@ export interface ReviewDetailDto {
   review: ReviewSummaryDto;
   files: Array<{
     filePath: string;
+    changeType?: string;
     language: string;
     originalContent: string;
     modifiedContent: string;
     addedCount: number;
     removedCount: number;
+    changedSymbols?: string[];
   }>;
   findings: ReviewFinding[];
   changeImpacts: ChangeImpactResponse[];
+  riskAssessment: ChangeRiskAssessment | null;
+  testSelectionPlan: TestSelectionPlan | null;
 }
 
 export interface SecurityFinding {
@@ -204,8 +293,43 @@ export interface SecurityFinding {
   lineNumber: number;
   maskedEvidence: string | null;
   remediation: string;
-  status: 'OPEN' | 'MITIGATED' | 'FALSE_POSITIVE';
+  fingerprint?: string | null;
+  status: 'OPEN' | 'MITIGATED' | 'FALSE_POSITIVE' | 'SUPPRESSED';
   detectedAt: string;
+  updatedAt: string;
+}
+
+export interface FindingSuppression {
+  id: string;
+  repositoryId: string | null;
+  fingerprint: string;
+  ruleId: string;
+  reason: string;
+  suppressedBy: string;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+export interface ChangeRiskPolicy {
+  id: string;
+  repositoryId: string | null;
+  version: number;
+  blockOnCriticalSecurity: boolean;
+  blockOnBreakingApi: boolean;
+  blockOnDestructiveMigration: boolean;
+  blockOnPromptInjection: boolean;
+  maxRiskScoreForPass: number;
+  maxRiskScoreForWarn: number;
+  minTestsForHighImpact: boolean;
+  sensitivePaths: string[];
+  architectureRules: Array<{
+    id: string;
+    sourceLayer: string;
+    forbiddenTargetLayer: string;
+    severity: string;
+    description: string;
+  }>;
+  updatedBy: string;
   updatedAt: string;
 }
 
@@ -298,4 +422,277 @@ export interface PipelineEvent {
   progressPercent: number;
   message: string;
   timestamp: string;
+}
+
+// --- Predictive Engineering Intelligence DTOs ---
+
+export interface SignalChannelScore {
+  channel: string;
+  label: string;
+  rawScore: number;
+  deduplicatedContribution: number;
+  riskLevel: string;
+  signalKind: string;
+  summary: string;
+}
+
+export interface TargetRiskBreakdown {
+  scope: 'FILE' | 'CLASS' | 'METHOD' | 'MODULE' | 'SERVICE' | string;
+  name: string;
+  filePath: string | null;
+  riskLevel: string;
+  riskScore: number;
+  reason: string;
+}
+
+export interface PredictionEvidenceItem {
+  id: string;
+  signalSource: string;
+  evidenceType: string;
+  targetRef: string | null;
+  summary: string;
+  weight: number;
+  historicalCount: number;
+  observedAt: string | null;
+}
+
+export interface PredictionCategoryItem {
+  id: string;
+  category:
+    | 'BUG_RISK'
+    | 'TEST_FAILURE_RISK'
+    | 'PRODUCTION_INCIDENT_RISK'
+    | 'CHANGE_FAILURE_RISK'
+    | 'PERFORMANCE_REGRESSION'
+    | string;
+  riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | 'INSUFFICIENT_DATA' | string;
+  riskScore: number;
+  probability: number | null;
+  confidenceLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'INSUFFICIENT_DATA' | string;
+  insufficientData: boolean;
+  historicalSampleSize: number;
+  dataFreshnessAt: string | null;
+  ruleOrModelVersion: string;
+  explanation: string;
+  limitations: string;
+  recommendedAction: string;
+  targetBreakdowns: TargetRiskBreakdown[];
+  evidence: PredictionEvidenceItem[];
+}
+
+export interface PrPredictionResponse {
+  predictionRunId: string;
+  reviewId: string;
+  repositoryId: string;
+  repositoryName: string;
+  prNumber: number;
+  prTitle: string;
+  commitSha: string;
+  engineVersion: string;
+  modelType: string;
+  overallEngineeringRiskScore: number;
+  overallRiskLevel: string;
+  policyBoundaryNote: string;
+  historicalSampleSize: number;
+  dataFreshnessAt: string | null;
+  dataAvailabilitySummary: string;
+  signalChannels: SignalChannelScore[];
+  predictions: PredictionCategoryItem[];
+  featureSummary: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface PredictionEvidenceResponse {
+  predictionRunId: string;
+  reviewId: string;
+  engineVersion: string;
+  byFile: TargetRiskBreakdown[];
+  byClass: TargetRiskBreakdown[];
+  byMethod: TargetRiskBreakdown[];
+  byModule: TargetRiskBreakdown[];
+  byService: TargetRiskBreakdown[];
+  evidence: PredictionEvidenceItem[];
+}
+
+export interface PredictedTestRiskItem {
+  testName: string;
+  testFilePath: string;
+  riskLevel: string;
+  riskScore: number;
+  confidenceLevel: string;
+  selectionReason: string;
+  historicalEvidence: string;
+  historicalRuns: number;
+  historicalFailures: number;
+  suggestedCommand: string;
+  predictionState: string;
+}
+
+export interface ActualTestExecutionItem {
+  id: string;
+  testName: string;
+  testFilePath: string | null;
+  outcome: 'PASSED' | 'FAILED' | 'SKIPPED' | 'FLAKY' | string;
+  durationMs: number;
+  errorSummary: string | null;
+  executedAt: string;
+}
+
+export interface PredictionTestsResponse {
+  predictionRunId: string;
+  reviewId: string;
+  prNumber: number;
+  separationNotice: string;
+  predictedTestsAtRisk: PredictedTestRiskItem[];
+  actualCiTestResults: ActualTestExecutionItem[];
+  hasActualCiResults: boolean;
+}
+
+export interface DefectRecordDto {
+  id: string;
+  repositoryId: string;
+  title: string;
+  severity: string;
+  moduleName: string | null;
+  filePaths: string[];
+  introducedPrNumber: number | null;
+  status: string;
+  reportedAt: string;
+}
+
+export interface DeploymentRecordDto {
+  id: string;
+  repositoryId: string;
+  serviceName: string;
+  environment: string;
+  prNumber: number | null;
+  commitSha: string | null;
+  outcome: 'SUCCEEDED' | 'FAILED' | 'ROLLED_BACK' | string;
+  rollbackOfDeploymentId: string | null;
+  changedConfig: boolean;
+  summary: string | null;
+  deployedAt: string;
+}
+
+export interface IncidentRecordDto {
+  id: string;
+  repositoryId: string;
+  title: string;
+  severity: string;
+  serviceName: string;
+  affectedModules: string[];
+  relatedDeploymentId: string | null;
+  relatedPrNumber: number | null;
+  status: string;
+  evidenceNote: string | null;
+  occurredAt: string;
+  resolvedAt: string | null;
+}
+
+export interface HistoricalContextResponse {
+  reviewId: string;
+  repositoryId: string;
+  repositoryName: string;
+  limitedHistory: boolean;
+  availabilityNotice: string;
+  totalMatchingRecords: number;
+  relatedDefects: DefectRecordDto[];
+  recentTestExecutions: ActualTestExecutionItem[];
+  relatedDeployments: DeploymentRecordDto[];
+  relatedIncidents: IncidentRecordDto[];
+}
+
+export interface PredictionModelEvaluationDto {
+  id: string;
+  repositoryId: string | null;
+  engineVersion: string;
+  category: string;
+  status: 'EVALUATED' | 'INSUFFICIENT_LABELLED_DATA' | string;
+  sampleSize: number;
+  positiveOutcomes: number;
+  precisionScore: number | null;
+  recallScore: number | null;
+  f1Score: number | null;
+  falsePositiveRate: number | null;
+  falseNegativeRate: number | null;
+  calibrationError: number | null;
+  baselineComparison: Record<string, unknown>;
+  notes: string;
+  evaluatedAt: string;
+}
+
+export interface PredictionSummaryRow {
+  predictionRunId: string;
+  reviewId: string;
+  repositoryId: string;
+  repositoryName: string;
+  prNumber: number;
+  prTitle: string;
+  overallEngineeringRiskScore: number;
+  overallRiskLevel: string;
+  bugRiskLevel: string;
+  testFailureRiskLevel: string;
+  incidentRiskLevel: string;
+  changeFailureRiskLevel: string;
+  performanceRiskLevel: string;
+  historicalSampleSize: number;
+  engineVersion: string;
+  createdAt: string;
+}
+
+export interface PredictiveOverviewResponse {
+  totalPredictions: number;
+  highRiskPredictions: number;
+  totalHistoricalTestExecutions: number;
+  totalDeployments: number;
+  totalRollbacks: number;
+  totalConfirmedIncidents: number;
+  totalConfirmedDefects: number;
+  limitedHistoricalData: boolean;
+  historicalDataNotice: string;
+  riskLevelDistribution: Record<string, number>;
+  recentPredictions: PredictionSummaryRow[];
+  problematicModules: Array<{
+    moduleName: string;
+    repositoryName: string;
+    defectCount: number;
+    incidentCount: number;
+    testFailureCount: number;
+  }>;
+  testReliability: Array<{
+    testName: string;
+    testFilePath: string;
+    totalRuns: number;
+    failedRuns: number;
+    flakyRuns: number;
+    passRatePct: number;
+  }>;
+  deploymentOutcomes: Array<{
+    serviceName: string;
+    totalDeployments: number;
+    failedDeployments: number;
+    rollbacks: number;
+    successRatePct: number;
+  }>;
+  recentIncidents: IncidentRecordDto[];
+  latestEvaluations: PredictionModelEvaluationDto[];
+}
+
+export interface IngestionResultDto {
+  id: string;
+  recordType: string;
+  duplicate: boolean;
+  externalEventKey: string;
+  recordedAt: string;
+}
+
+export interface PredictionRunHistoryItem {
+  predictionRunId: string;
+  commitSha: string;
+  engineVersion: string;
+  modelType: string;
+  overallEngineeringRiskScore: number;
+  overallRiskLevel: string;
+  historicalSampleSize: number;
+  createdAt: string;
 }

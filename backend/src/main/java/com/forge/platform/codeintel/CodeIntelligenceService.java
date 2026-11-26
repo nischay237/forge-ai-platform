@@ -17,7 +17,9 @@ import com.forge.platform.sse.SseHubService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.util.ArrayDeque;
@@ -48,6 +50,7 @@ public class CodeIntelligenceService implements DomainEventHandler {
     private final SseHubService sseHubService;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transactionTemplate;
 
     public CodeIntelligenceService(
         RepositoryJpaRepository repositoryJpaRepository,
@@ -59,7 +62,8 @@ public class CodeIntelligenceService implements DomainEventHandler {
         IdempotencyService idempotencyService,
         SseHubService sseHubService,
         AuditService auditService,
-        ObjectMapper objectMapper
+        ObjectMapper objectMapper,
+        PlatformTransactionManager transactionManager
     ) {
         this.repositoryJpaRepository = repositoryJpaRepository;
         this.sourceFileJpaRepository = sourceFileJpaRepository;
@@ -71,6 +75,7 @@ public class CodeIntelligenceService implements DomainEventHandler {
         this.sseHubService = sseHubService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     @Override
@@ -80,15 +85,40 @@ public class CodeIntelligenceService implements DomainEventHandler {
 
     @Override
     public void handle(String eventId, String tenantId, String payload) {
-        if (!idempotencyService.tryClaimEvent("repo-index:" + eventId, tenantId, "REPO_INDEX_REQUESTED")) {
+        String claimKey = "repo-index:" + eventId;
+        if (!idempotencyService.tryClaimEvent(claimKey, tenantId, "REPO_INDEX_REQUESTED")) {
             return;
         }
+        String repoId = "";
         try {
             JsonNode node = objectMapper.readTree(payload);
-            String repoId = node.path("repositoryId").asText();
-            indexRepository(tenantId, repoId);
+            repoId = node.path("repositoryId").asText();
+            final String targetRepoId = repoId;
+            transactionTemplate.executeWithoutResult(status -> indexRepository(tenantId, targetRepoId));
+            idempotencyService.markCompleted(claimKey);
         } catch (Exception ex) {
+            idempotencyService.releaseClaim(claimKey);
+            markIndexFailed(tenantId, repoId, ex.getMessage());
             log.error("Async repository indexing failed for event {}: {}", eventId, ex.getMessage(), ex);
+            throw new IllegalStateException("Repository indexing failed for event " + eventId, ex);
+        }
+    }
+
+    private void markIndexFailed(String tenantId, String repositoryId, String errorMsg) {
+        if (repositoryId == null || repositoryId.isBlank()) return;
+        try {
+            transactionTemplate.executeWithoutResult(status ->
+                repositoryJpaRepository.findByIdAndTenantId(repositoryId, tenantId).ifPresent(repo -> {
+                    repo.setIndexStatus("INDEX_FAILED");
+                    repositoryJpaRepository.save(repo);
+                })
+            );
+            sseHubService.publish(tenantId, PipelineEvent.of(
+                "REPO_INDEX", repositoryId, "FAILED", 100,
+                "Repository AST indexing failed: " + errorMsg
+            ));
+        } catch (Exception ignored) {
+            // best effort status update
         }
     }
 
@@ -99,7 +129,7 @@ public class CodeIntelligenceService implements DomainEventHandler {
 
         sseHubService.publish(tenantId, PipelineEvent.of(
             "REPO_INDEX", repositoryId, "PARSING_AST", 30,
-            "Parsing JavaParser AST for " + repo.getFullName()
+            "Parsing JavaParser & TypeScript/JS AST for " + repo.getFullName()
         ));
 
         List<SourceFileEntity> files = sourceFileJpaRepository
@@ -108,10 +138,17 @@ public class CodeIntelligenceService implements DomainEventHandler {
         codeSymbolRepository.deleteByRepositoryIdAndTenantId(repositoryId, tenantId);
         codeDependencyRepository.deleteByRepositoryIdAndTenantId(repositoryId, tenantId);
 
-        Map<String, String> nodeToFile = new HashMap<>();
+        // Preserve duplicate basenames (e.g. billing/Config.java vs auth/Config.java) using disambiguated node keys!
+        Map<String, List<SourceFileEntity>> filesBySimpleName = new HashMap<>();
+        for (SourceFileEntity f : files) {
+            filesBySimpleName.computeIfAbsent(extractSimpleName(f.getFilePath()), k -> new ArrayList<>()).add(f);
+        }
+
+        Map<String, String> filePathToNodeKey = new HashMap<>();
+        Map<String, List<String>> simpleNameToNodeKeys = new HashMap<>();
+        Map<String, String> nodeKeyToFilePath = new HashMap<>();
         List<JavaAstAnalyzer.AstResult> parsedResults = new ArrayList<>();
         Map<JavaAstAnalyzer.AstResult, SourceFileEntity> resultToFile = new HashMap<>();
-
         List<CodeSymbolEntity> symbolsToSave = new ArrayList<>();
 
         for (SourceFileEntity file : files) {
@@ -119,7 +156,14 @@ public class CodeIntelligenceService implements DomainEventHandler {
             file.setComplexityScore(ast.fileComplexity());
             sourceFileJpaRepository.save(file);
 
-            nodeToFile.put(ast.primaryNode(), file.getFilePath());
+            String base = ast.primaryNode();
+            boolean hasDuplicate = filesBySimpleName.getOrDefault(extractSimpleName(file.getFilePath()), List.of()).size() > 1;
+            String canonicalNodeKey = hasDuplicate ? disambiguatedNodeKey(file.getFilePath(), base) : base;
+
+            filePathToNodeKey.put(file.getFilePath(), canonicalNodeKey);
+            nodeKeyToFilePath.put(canonicalNodeKey, file.getFilePath());
+            simpleNameToNodeKeys.computeIfAbsent(base, k -> new ArrayList<>()).add(canonicalNodeKey);
+
             parsedResults.add(ast);
             resultToFile.put(ast, file);
 
@@ -137,18 +181,32 @@ public class CodeIntelligenceService implements DomainEventHandler {
 
         for (JavaAstAnalyzer.AstResult ast : parsedResults) {
             SourceFileEntity srcFile = resultToFile.get(ast);
+            String sourceKey = filePathToNodeKey.get(srcFile.getFilePath());
+            String srcDir = parentDirectory(srcFile.getFilePath());
+
             for (JavaAstAnalyzer.RawDependency raw : ast.dependencies()) {
-                // Only keep edges targeting nodes inside this repository so the graph stays crisp & accurate
-                if (!nodeToFile.containsKey(raw.targetNode())) continue;
-                String edgeKey = raw.sourceNode() + "->" + raw.targetNode();
+                List<String> candidates = simpleNameToNodeKeys.get(raw.targetNode());
+                if (candidates == null || candidates.isEmpty()) continue;
+
+                // Prefer target in the same package/directory when duplicate class/file names exist
+                String targetKey = candidates.size() == 1
+                    ? candidates.get(0)
+                    : candidates.stream()
+                        .filter(k -> parentDirectory(nodeKeyToFilePath.getOrDefault(k, "")).equals(srcDir))
+                        .findFirst()
+                        .orElse(candidates.get(0));
+
+                if (sourceKey.equals(targetKey)) continue;
+                String edgeKey = sourceKey + "->" + targetKey;
                 if (!dedupEdges.add(edgeKey)) continue;
+
                 depsToSave.add(CodeDependencyEntity.create(
                     tenantId,
                     repositoryId,
-                    raw.sourceNode(),
+                    sourceKey,
                     srcFile.getFilePath(),
-                    raw.targetNode(),
-                    nodeToFile.get(raw.targetNode()),
+                    targetKey,
+                    nodeKeyToFilePath.get(targetKey),
                     raw.dependencyType()
                 ));
             }
@@ -187,6 +245,12 @@ public class CodeIntelligenceService implements DomainEventHandler {
         for (CodeSymbolEntity s : symbols) {
             symbolCounts.merge(s.getFilePath(), 1, Integer::sum);
         }
+
+        Map<String, List<SourceFileEntity>> bySimple = new HashMap<>();
+        for (SourceFileEntity f : files) {
+            bySimple.computeIfAbsent(extractSimpleName(f.getFilePath()), k -> new ArrayList<>()).add(f);
+        }
+
         Map<String, Integer> incoming = new HashMap<>();
         Map<String, Integer> outgoing = new HashMap<>();
         List<CodeIntelDtos.GraphEdge> edges = new ArrayList<>();
@@ -199,21 +263,25 @@ public class CodeIntelligenceService implements DomainEventHandler {
         List<CodeIntelDtos.GraphNode> nodes = new ArrayList<>();
         Set<String> seenNodeIds = new HashSet<>();
         for (SourceFileEntity f : files) {
-            String nodeName = extractSimpleName(f.getFilePath());
-            if (!seenNodeIds.add(nodeName)) continue;
+            String simple = extractSimpleName(f.getFilePath());
+            String nodeKey = bySimple.getOrDefault(simple, List.of()).size() > 1
+                ? disambiguatedNodeKey(f.getFilePath(), simple)
+                : simple;
+            if (!seenNodeIds.add(nodeKey)) continue;
             nodes.add(new CodeIntelDtos.GraphNode(
-                nodeName,
-                nodeName,
+                nodeKey,
+                nodeKey,
                 f.getFilePath(),
-                classifyLayer(nodeName, f.getFilePath()),
+                classifyLayer(nodeKey, f.getFilePath()),
                 symbolCounts.getOrDefault(f.getFilePath(), 1),
                 f.getComplexityScore(),
-                incoming.getOrDefault(nodeName, 0),
-                outgoing.getOrDefault(nodeName, 0)
+                incoming.getOrDefault(nodeKey, 0),
+                outgoing.getOrDefault(nodeKey, 0)
             ));
         }
 
-        return new CodeIntelDtos.DependencyGraphResponse(repo.getId(), repo.getFullName(), nodes, edges);
+        List<List<String>> cycles = detectCircularDependencies(deps);
+        return new CodeIntelDtos.DependencyGraphResponse(repo.getId(), repo.getFullName(), nodes, edges, cycles);
     }
 
     @Transactional(readOnly = true)
@@ -227,10 +295,10 @@ public class CodeIntelligenceService implements DomainEventHandler {
         String tenantId, String repositoryId, String targetNodeOrFile
     ) {
         repositoryService.requireRepository(repositoryId, tenantId);
-        String targetNode = extractSimpleName(targetNodeOrFile);
         List<CodeDependencyEntity> deps = codeDependencyRepository.findByRepositoryIdAndTenantId(repositoryId, tenantId);
 
-        // Reverse adjacency: target -> list of dependents that call/import/test target
+        String targetNode = resolveTargetNodeKey(targetNodeOrFile, deps);
+
         Map<String, List<CodeDependencyEntity>> reverseAdj = new HashMap<>();
         List<String> directDeps = new ArrayList<>();
         for (CodeDependencyEntity d : deps) {
@@ -240,27 +308,37 @@ public class CodeIntelligenceService implements DomainEventHandler {
             }
         }
 
-        // BFS to compute blast radius
         Map<String, CodeIntelDtos.ImpactedNode> visited = new LinkedHashMap<>();
+        Map<String, List<String>> pathChain = new HashMap<>();
         Queue<String> queue = new ArrayDeque<>();
         Map<String, Integer> depth = new HashMap<>();
         queue.add(targetNode);
         depth.put(targetNode, 0);
+        pathChain.put(targetNode, List.of(targetNode));
 
         while (!queue.isEmpty()) {
             String current = queue.poll();
             int currentHop = depth.get(current);
-            if (currentHop >= 4) continue;
+            if (currentHop >= 5) continue;
             for (CodeDependencyEntity edge : reverseAdj.getOrDefault(current, List.of())) {
                 String dependent = edge.getSourceNode();
                 if (!dependent.equalsIgnoreCase(targetNode) && !visited.containsKey(dependent)) {
-                    boolean isTest = dependent.endsWith("Test") || edge.getSourceFile().contains("/test/");
+                    boolean isTest = isTestFileOrNode(dependent, edge.getSourceFile());
+                    List<String> chain = new ArrayList<>(pathChain.getOrDefault(current, List.of(current)));
+                    chain.add(dependent);
+                    pathChain.put(dependent, chain);
+
+                    String reason = currentHop == 0
+                        ? dependent + " directly " + edge.getDependencyType().toLowerCase(Locale.ROOT) + " " + targetNode
+                        : "Transitive (" + (currentHop + 1) + "-hop) via " + String.join(" -> ", chain);
+
                     visited.put(dependent, new CodeIntelDtos.ImpactedNode(
                         dependent,
                         edge.getSourceFile(),
                         currentHop + 1,
                         edge.getDependencyType(),
-                        isTest
+                        isTest,
+                        reason
                     ));
                     depth.put(dependent, currentHop + 1);
                     queue.add(dependent);
@@ -281,6 +359,76 @@ public class CodeIntelligenceService implements DomainEventHandler {
             impacted,
             directDeps.stream().distinct().toList()
         );
+    }
+
+    /**
+     * Detects strongly connected / circular dependency cycles among non-test modules.
+     */
+    public List<List<String>> detectCircularDependencies(List<CodeDependencyEntity> deps) {
+        Map<String, Set<String>> adj = new LinkedHashMap<>();
+        for (CodeDependencyEntity d : deps) {
+            if ("TESTS".equalsIgnoreCase(d.getDependencyType())) continue;
+            adj.computeIfAbsent(d.getSourceNode(), k -> new LinkedHashSet<>()).add(d.getTargetNode());
+        }
+
+        List<List<String>> cycles = new ArrayList<>();
+        Set<String> canonicalSeen = new HashSet<>();
+        Set<String> globalVisited = new HashSet<>();
+
+        for (String start : adj.keySet()) {
+            if (globalVisited.contains(start)) continue;
+            dfsFindCycles(start, adj, new ArrayList<>(), new HashSet<>(), globalVisited, cycles, canonicalSeen);
+        }
+        return cycles;
+    }
+
+    private void dfsFindCycles(
+        String node,
+        Map<String, Set<String>> adj,
+        List<String> stack,
+        Set<String> onStack,
+        Set<String> visited,
+        List<List<String>> cycles,
+        Set<String> canonicalSeen
+    ) {
+        if (cycles.size() >= 20) return;
+        visited.add(node);
+        stack.add(node);
+        onStack.add(node);
+
+        for (String next : adj.getOrDefault(node, Set.of())) {
+            if (onStack.contains(next)) {
+                int idx = stack.indexOf(next);
+                if (idx >= 0) {
+                    List<String> cycle = new ArrayList<>(stack.subList(idx, stack.size()));
+                    String sig = canonicalCycleKey(cycle);
+                    if (canonicalSeen.add(sig)) {
+                        cycle.add(next); // close the loop visually: A -> B -> A
+                        cycles.add(cycle);
+                    }
+                }
+            } else if (!visited.contains(next)) {
+                dfsFindCycles(next, adj, stack, onStack, visited, cycles, canonicalSeen);
+            }
+        }
+
+        stack.remove(stack.size() - 1);
+        onStack.remove(node);
+    }
+
+    private String canonicalCycleKey(List<String> nodes) {
+        if (nodes.isEmpty()) return "";
+        int minIdx = 0;
+        for (int i = 1; i < nodes.size(); i++) {
+            if (nodes.get(i).compareTo(nodes.get(minIdx)) < 0) {
+                minIdx = i;
+            }
+        }
+        List<String> rotated = new ArrayList<>(nodes.size());
+        for (int i = 0; i < nodes.size(); i++) {
+            rotated.add(nodes.get((minIdx + i) % nodes.size()));
+        }
+        return String.join("->", rotated);
     }
 
     @Transactional(readOnly = true)
@@ -325,7 +473,6 @@ public class CodeIntelligenceService implements DomainEventHandler {
             }
         }
 
-        // Also match file contents for semantic/keyword phrases not in symbol names
         for (SourceFileEntity sf : files) {
             String[] lines = sf.getContent().split("\\R");
             for (int i = 0; i < lines.length; i++) {
@@ -371,6 +518,40 @@ public class CodeIntelligenceService implements DomainEventHandler {
         return codeSymbolRepository.findByRepositoryIdAndTenantIdOrderByFilePathAscStartLineAsc(repositoryId, tenantId);
     }
 
+    private String resolveTargetNodeKey(String targetNodeOrFile, List<CodeDependencyEntity> deps) {
+        String normalized = targetNodeOrFile.replace('\\', '/').trim();
+        // 1. Direct match against recorded target/source file path
+        for (CodeDependencyEntity d : deps) {
+            if (normalized.equalsIgnoreCase(d.getTargetFile())) return d.getTargetNode();
+            if (normalized.equalsIgnoreCase(d.getSourceFile())) return d.getSourceNode();
+        }
+        // 2. Direct match against canonical node name
+        for (CodeDependencyEntity d : deps) {
+            if (normalized.equalsIgnoreCase(d.getTargetNode())) return d.getTargetNode();
+            if (normalized.equalsIgnoreCase(d.getSourceNode())) return d.getSourceNode();
+        }
+        return extractSimpleName(normalized);
+    }
+
+    private boolean isTestFileOrNode(String nodeName, String filePath) {
+        String p = filePath == null ? "" : filePath.replace('\\', '/').toLowerCase(Locale.ROOT);
+        return nodeName.endsWith("Test") || nodeName.endsWith("Tests") || nodeName.endsWith("IT")
+            || p.contains("/test/") || p.contains(".test.") || p.contains(".spec.");
+    }
+
+    private String disambiguatedNodeKey(String filePath, String simpleName) {
+        String dir = parentDirectory(filePath);
+        if (dir.isBlank()) return simpleName;
+        String parent = dir.contains("/") ? dir.substring(dir.lastIndexOf('/') + 1) : dir;
+        return parent + "/" + simpleName;
+    }
+
+    private String parentDirectory(String filePath) {
+        String norm = filePath.replace('\\', '/');
+        int idx = norm.lastIndexOf('/');
+        return idx > 0 ? norm.substring(0, idx) : "";
+    }
+
     private String extractSnippet(String content, int line) {
         String[] lines = content.split("\\R");
         int start = Math.max(0, line - 2);
@@ -382,20 +563,20 @@ public class CodeIntelligenceService implements DomainEventHandler {
         return sb.toString().trim();
     }
 
-    private String extractSimpleName(String pathOrName) {
+    public static String extractSimpleName(String pathOrName) {
         String normalized = pathOrName.replace('\\', '/');
         String base = normalized.contains("/") ? normalized.substring(normalized.lastIndexOf('/') + 1) : normalized;
         int dot = base.lastIndexOf('.');
         return dot > 0 ? base.substring(0, dot) : base;
     }
 
-    private String classifyLayer(String nodeName, String filePath) {
+    public static String classifyLayer(String nodeName, String filePath) {
         String lower = (nodeName + " " + filePath).toLowerCase(Locale.ROOT);
-        if (lower.contains("test")) return "TEST";
-        if (lower.contains("controller") || lower.contains("gateway") || lower.contains("api")) return "API";
+        if (lower.contains("test") || lower.contains(".spec.")) return "TEST";
+        if (lower.contains("controller") || lower.contains("gateway") || lower.contains("handler") || lower.contains("/api/")) return "API";
         if (lower.contains("service") || lower.contains("engine") || lower.contains("orchestrator")) return "SERVICE";
         if (lower.contains("repository") || lower.contains("store") || lower.contains("ledger") || lower.contains("dao")) return "DATA";
-        if (lower.contains("security") || lower.contains("auth") || lower.contains("filter") || lower.contains("guard")) return "SECURITY";
+        if (lower.contains("security") || lower.contains("auth") || lower.contains("filter") || lower.contains("guard") || lower.contains("verifier")) return "SECURITY";
         if (lower.contains("kafka") || lower.contains("outbox") || lower.contains("event") || lower.contains("consumer")) return "MESSAGING";
         return "DOMAIN";
     }

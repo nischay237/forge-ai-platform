@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Activity, AlertTriangle, CheckCircle2, Plus, Terminal, X } from 'lucide-react';
 import { api } from '../lib/api';
-import { Badge, Button, EmptyState, PageHeader, Panel, SkeletonBlock } from '../components/ui';
+import { Badge, Button, EmptyState, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
 import { formatRelativeTime, statusClasses } from '../lib/utils';
 
 const SAMPLE_CI_LOG = `[INFO] Running com.acme.ledger.SettlementIntegrationTest
@@ -64,6 +64,13 @@ export function CiIntelligencePage() {
         }
       />
 
+      {builds.isError && (
+        <ErrorBanner
+          message={builds.error instanceof Error ? builds.error.message : 'Could not load CI pipeline builds'}
+          onRetry={() => builds.refetch()}
+        />
+      )}
+
       {builds.isLoading ? (
         <SkeletonBlock className="h-[480px]" />
       ) : (builds.data ?? []).length === 0 ? (
@@ -75,7 +82,6 @@ export function CiIntelligencePage() {
         />
       ) : (
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
-          {/* Build List */}
           <Panel className="xl:col-span-4 overflow-hidden">
             <div className="px-4 py-3 border-b border-[#EFEFEA] bg-[#FAFAF8] text-xs font-semibold text-[#111111]">
               Pipeline History ({builds.data?.length ?? 0})
@@ -118,7 +124,6 @@ export function CiIntelligencePage() {
             </div>
           </Panel>
 
-          {/* Build Diagnosis & Dark Terminal Log Viewer */}
           {active && (
             <div className="xl:col-span-8 space-y-4">
               <Panel className="p-5 space-y-4">
@@ -197,7 +202,6 @@ export function CiIntelligencePage() {
         </div>
       )}
 
-      {/* Diagnose Custom CI Log Modal */}
       <Dialog.Root open={open} onOpenChange={setOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/35 backdrop-blur-[2px]" />
@@ -224,8 +228,9 @@ export function CiIntelligencePage() {
               className="space-y-4"
             >
               <div>
-                <label className="block text-xs font-medium text-stone-700 mb-1">Repository</label>
+                <label htmlFor="ci-repo" className="block text-xs font-medium text-stone-700 mb-1">Repository</label>
                 <select
+                  id="ci-repo"
                   value={repoId}
                   onChange={(e) => setRepoId(e.target.value)}
                   className="w-full h-9 px-3 rounded-md bg-[#FAFAF8] border border-[#DCDCD5] text-xs font-mono text-[#111111] focus:outline-none focus:border-[#111111]"
@@ -239,10 +244,11 @@ export function CiIntelligencePage() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-stone-700 mb-1">
+                  <label htmlFor="ci-pipe" className="block text-xs font-medium text-stone-700 mb-1">
                     Pipeline Name
                   </label>
                   <input
+                    id="ci-pipe"
                     required
                     value={pipelineName}
                     onChange={(e) => setPipelineName(e.target.value)}
@@ -250,8 +256,9 @@ export function CiIntelligencePage() {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-stone-700 mb-1">Branch</label>
+                  <label htmlFor="ci-branch" className="block text-xs font-medium text-stone-700 mb-1">Branch</label>
                   <input
+                    id="ci-branch"
                     required
                     value={branch}
                     onChange={(e) => setBranch(e.target.value)}
@@ -260,10 +267,11 @@ export function CiIntelligencePage() {
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-medium text-stone-700 mb-1">
+                <label htmlFor="ci-log" className="block text-xs font-medium text-stone-700 mb-1">
                   CI Log Output
                 </label>
                 <textarea
+                  id="ci-log"
                   required
                   rows={8}
                   value={rawLog}
@@ -271,11 +279,20 @@ export function CiIntelligencePage() {
                   className="w-full p-3 rounded-lg bg-[#141416] border border-[#27272A] text-xs font-mono text-stone-200 focus:outline-none focus:border-[#111111]"
                 />
               </div>
+
+              {submitMutation.isError && (
+                <div role="alert" className="p-2.5 rounded-md bg-red-50 border border-red-200 text-xs text-red-700">
+                  {submitMutation.error instanceof Error
+                    ? submitMutation.error.message
+                    : 'Failed to submit CI log'}
+                </div>
+              )}
+
               <div className="flex justify-end gap-2">
                 <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" disabled={submitMutation.isPending}>
+                <Button type="submit" disabled={submitMutation.isPending || !repoId}>
                   {submitMutation.isPending ? 'Analyzing...' : 'Analyze Failure Log'}
                 </Button>
               </div>

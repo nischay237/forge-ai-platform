@@ -1,5 +1,7 @@
 package com.forge.platform.messaging;
 
+import com.forge.platform.common.TenantContext;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -24,21 +26,31 @@ public class LocalDomainEventBus implements DomainEventBus {
     @Override
     public void publish(OutboxEvent event) {
         executor.submit(() -> {
-            handlersProvider.orderedStream().forEach(handler -> {
-                if (handler.supports(event.getTopic())) {
-                    try {
-                        handler.handle(event.getId(), event.getTenantId(), event.getPayload());
-                    } catch (Exception ex) {
-                        log.error("Local async handler failed for topic {} event {}: {}",
-                            event.getTopic(), event.getId(), ex.getMessage(), ex);
+            TenantContext.set(TenantContext.PrincipalContext.system(event.getTenantId(), "local-worker@forge.dev"));
+            try {
+                handlersProvider.orderedStream().forEach(handler -> {
+                    if (handler.supports(event.getTopic())) {
+                        try {
+                            handler.handle(event.getId(), event.getTenantId(), event.getPayload());
+                        } catch (Exception ex) {
+                            log.error("Local async handler failed for topic {} event {}: {}",
+                                event.getTopic(), event.getId(), ex.getMessage(), ex);
+                        }
                     }
-                }
-            });
+                });
+            } finally {
+                TenantContext.clear();
+            }
         });
     }
 
     @Override
     public String transportName() {
         return "local-virtual-thread-outbox";
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        executor.shutdown();
     }
 }

@@ -3,10 +3,12 @@ package com.forge.platform.ci;
 import com.forge.platform.audit.AuditService;
 import com.forge.platform.common.ResourceNotFoundException;
 import com.forge.platform.common.TenantContext;
+import com.forge.platform.messaging.CiBuildRecordedListener;
 import com.forge.platform.repository.RepositoryEntity;
 import com.forge.platform.repository.RepositoryJpaRepository;
 import com.forge.platform.repository.RepositoryService;
 import jakarta.validation.constraints.NotBlank;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,19 +53,22 @@ public class CiService {
     private final RepositoryService repositoryService;
     private final CiFailureAnalyzer analyzer;
     private final AuditService auditService;
+    private final ObjectProvider<CiBuildRecordedListener> ciBuildListeners;
 
     public CiService(
         CiBuildRepository ciBuildRepository,
         RepositoryJpaRepository repositoryJpaRepository,
         RepositoryService repositoryService,
         CiFailureAnalyzer analyzer,
-        AuditService auditService
+        AuditService auditService,
+        ObjectProvider<CiBuildRecordedListener> ciBuildListeners
     ) {
         this.ciBuildRepository = ciBuildRepository;
         this.repositoryJpaRepository = repositoryJpaRepository;
         this.repositoryService = repositoryService;
         this.analyzer = analyzer;
         this.auditService = auditService;
+        this.ciBuildListeners = ciBuildListeners;
     }
 
     @Transactional(readOnly = true)
@@ -115,6 +120,12 @@ public class CiService {
             "CI_BUILD_DIAGNOSED", "CI_BUILD", saved.getId(),
             "Analyzed pipeline '" + saved.getPipelineName() + "' (" + saved.getStatus() + " / " + saved.getFailureCategory() + ")",
             "ci");
+
+        ciBuildListeners.orderedStream().forEach(listener -> listener.onCiBuildRecorded(
+            tenantId, repo.getId(), saved.getId(), saved.getPipelineName(), saved.getCommitSha(),
+            saved.getPrNumber(), saved.getStatus(), saved.getDurationSeconds(),
+            saved.getFailureCategory(), saved.getRawLog(), saved.getTriggeredAt()
+        ));
 
         return toDto(saved, repo.getFullName());
     }

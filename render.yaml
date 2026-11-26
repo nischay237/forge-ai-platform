@@ -3,20 +3,34 @@ services:
     name: forge-ai-platform
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: free
+    plan: starter
     healthCheckPath: /actuator/health
     envVars:
       - key: PORT
-        value: 10000
+        value: "10000"
       - key: SPRING_PROFILES_ACTIVE
-        value: local
+        value: prod
       - key: FORGE_SEED_ENABLED
-        value: "true"
+        value: "false"
+      - key: SPRING_DATASOURCE_URL
+        sync: false
+      - key: SPRING_DATASOURCE_USERNAME
+        sync: false
+      - key: SPRING_DATASOURCE_PASSWORD
+        sync: false
+      - key: SPRING_KAFKA_BOOTSTRAP_SERVERS
+        sync: false
+      - key: SPRING_DATA_REDIS_HOST
+        sync: false
+      - key: SPRING_DATA_REDIS_PORT
+        value: "6379"
+      - key: SPRING_DATA_REDIS_PASSWORD
+        sync: false
       - key: FORGE_JWT_SECRET
-        generateValue: true
+        sync: false
       - key: FORGE_ENCRYPTION_KEY
-        generateValue: true
-      - key: FORGE_GITHUB_WEBHOOK_SECRET
-        generateValue: true
+        sync: false
+      - key: FORGE_ENCRYPTION_KEY_ID
+        value: k1
       - key: FORGE_CORS_ORIGINS
-        value: https://forge-ai-platform.onrender.com,https://nischaysrivastava.com
+        sync: false

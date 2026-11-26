@@ -105,7 +105,11 @@ public class RepositoryService {
             repo.getId(),
             "REPO_INDEX_REQUESTED",
             ForgeTopics.REPO_INDEX_REQUESTED,
-            Map.of("tenantId", tenantId, "repositoryId", repo.getId())
+            Map.of(
+                "eventId", java.util.UUID.randomUUID().toString(),
+                "tenantId", tenantId,
+                "repositoryId", repo.getId()
+            )
         );
 
         auditService.recordCurrent("REPOSITORY_CONNECTED", "REPOSITORY", repo.getId(),
@@ -127,7 +131,11 @@ public class RepositoryService {
             repo.getId(),
             "REPO_INDEX_REQUESTED",
             ForgeTopics.REPO_INDEX_REQUESTED,
-            Map.of("tenantId", tenantId, "repositoryId", repo.getId())
+            Map.of(
+                "eventId", java.util.UUID.randomUUID().toString(),
+                "tenantId", tenantId,
+                "repositoryId", repo.getId()
+            )
         );
 
         auditService.recordCurrent("REPOSITORY_REINDEX_TRIGGERED", "REPOSITORY", repo.getId(),
@@ -172,8 +180,8 @@ public class RepositoryService {
     public RepositoryDtos.SourceFileDetailDto getFileContent(String repositoryId, String fileId) {
         String tenantId = TenantContext.requireTenantId();
         requireRepository(repositoryId, tenantId);
-        SourceFileEntity file = sourceFileJpaRepository.findById(fileId)
-            .filter(f -> f.getTenantId().equals(tenantId) && f.getRepositoryId().equals(repositoryId))
+        SourceFileEntity file = sourceFileJpaRepository
+            .findByIdAndRepositoryIdAndTenantId(fileId, repositoryId, tenantId)
             .orElseThrow(() -> new ResourceNotFoundException("Source file not found"));
         return repositoryMapper.toDetailDto(file);
     }

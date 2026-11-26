@@ -1,0 +1,12 @@
+# Isolated Demo Profile — NEVER combine with 'prod' profile.
+# Activate explicitly with: SPRING_PROFILES_ACTIVE=local,demo
+
+forge:
+  seed:
+    enabled: true
+  demo:
+    owner-email: ${FORGE_DEMO_OWNER_EMAIL:nischay@forge.dev}
+    admin-email: ${FORGE_DEMO_ADMIN_EMAIL:ananya.sec@forge.dev}
+    reviewer-email: ${FORGE_DEMO_REVIEWER_EMAIL:rohan.sde@forge.dev}
+    initial-password: ${FORGE_DEMO_PASSWORD:ForgeDemo#2026!}
+    webhook-secret: ${FORGE_DEMO_WEBHOOK_SECRET:whsec_demo_isolated_profile_only}

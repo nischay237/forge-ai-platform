@@ -1,6 +1,7 @@
 spring:
   autoconfigure:
     exclude:
+      - org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
       - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
       - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
       - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
@@ -22,6 +23,14 @@ management:
         enabled: false
 
 forge:
+  security:
+    jwt-secret: test-only-jwt-signing-secret-with-more-than-64-characters-entropy-2026!
+    jwt-expiration-ms: 900000
+    refresh-expiration-ms: 604800000
+    encryption-key: MDEyMzQ1Njc4OUFCQ0RFRjAxMjM0NTY3ODlBQkNERUY=
+    encryption-key-id: k1
+  webhooks:
+    allow-inline-diff: true
   seed:
     enabled: false
   outbox:

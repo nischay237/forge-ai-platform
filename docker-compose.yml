@@ -1,17 +1,21 @@
+# Production-hardened Docker Compose stack for FORGE
+# Copy .env.example to .env and populate all required secrets before running:
+#   docker compose up --build
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: forge-postgres
     environment:
-      POSTGRES_DB: forge
-      POSTGRES_USER: forge
-      POSTGRES_PASSWORD: forge_dev_password
+      POSTGRES_DB: ${POSTGRES_DB:-forge}
+      POSTGRES_USER: ${POSTGRES_USER:-forge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - forge_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U forge -d forge"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-forge} -d ${POSTGRES_DB:-forge}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -19,20 +23,22 @@ services:
   redis:
     image: redis:7.4-alpine
     container_name: forge-redis
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
 
   kafka:
     image: apache/kafka:3.9.0
     container_name: forge-kafka
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -57,18 +63,18 @@ services:
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
 
   grafana:
     image: grafana/grafana:11.3.0
     container_name: forge-grafana
     environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: forge_grafana_password
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
     volumes:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     depends_on:
       - prometheus
 
@@ -79,18 +85,22 @@ services:
     container_name: forge-backend
     environment:
       SPRING_PROFILES_ACTIVE: prod
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/forge
-      SPRING_DATASOURCE_USERNAME: forge
-      SPRING_DATASOURCE_PASSWORD: forge_dev_password
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-forge}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-forge}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      FORGE_JWT_SECRET: ${FORGE_JWT_SECRET:-change-me-in-prod-at-least-64-characters-long-super-secret-signing-key}
-      FORGE_ENCRYPTION_KEY: ${FORGE_ENCRYPTION_KEY:-MDEyMzQ1Njc4OUFCQ0RFRjAxMjM0NTY3ODlBQkNERUY=}
-      FORGE_GITHUB_WEBHOOK_SECRET: ${FORGE_GITHUB_WEBHOOK_SECRET:-forge_webhook_dev_secret}
+      FORGE_JWT_SECRET: ${FORGE_JWT_SECRET:?Set FORGE_JWT_SECRET (>= 32 random bytes) in .env}
+      FORGE_ENCRYPTION_KEY: ${FORGE_ENCRYPTION_KEY:?Set FORGE_ENCRYPTION_KEY (base64 32-byte AES-256 key) in .env}
+      FORGE_ENCRYPTION_KEY_ID: ${FORGE_ENCRYPTION_KEY_ID:-k1}
+      FORGE_ENCRYPTION_PREVIOUS_KEYS: ${FORGE_ENCRYPTION_PREVIOUS_KEYS:-}
+      FORGE_CORS_ORIGINS: ${FORGE_CORS_ORIGINS:-http://localhost:5173}
       FORGE_OPENAI_API_KEY: ${FORGE_OPENAI_API_KEY:-}
+      FORGE_SWAGGER_ENABLED: ${FORGE_SWAGGER_ENABLED:-false}
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy

@@ -3,6 +3,7 @@ package com.forge.platform.audit;
 import com.forge.platform.common.TenantContext;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
@@ -20,17 +21,18 @@ public class AuditService {
     public void record(String tenantId, String actorEmail, String actorRole,
                        String action, String resourceType, String resourceId,
                        String details, String ipAddress) {
-        AuditLog entry = AuditLog.create(
-            tenantId,
-            actorEmail != null ? actorEmail : "system@forge.dev",
-            actorRole != null ? actorRole : "SYSTEM",
-            action,
-            resourceType,
-            resourceId,
-            details,
-            ipAddress != null ? ipAddress : "internal"
-        );
-        auditLogRepository.save(entry);
+        saveEntry(tenantId, actorEmail, actorRole, action, resourceType, resourceId, details, ipAddress);
+    }
+
+    /**
+     * Records security events in an isolated REQUIRES_NEW transaction so they survive caller rollbacks
+     * (e.g., failed login attempts, brute-force lockouts, invalid webhook HMAC rejections).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void recordIsolated(String tenantId, String actorEmail, String actorRole,
+                               String action, String resourceType, String resourceId,
+                               String details, String ipAddress) {
+        saveEntry(tenantId, actorEmail, actorRole, action, resourceType, resourceId, details, ipAddress);
     }
 
     @Transactional
@@ -55,5 +57,21 @@ public class AuditService {
                 tenantId, actionFilter.trim(), PageRequest.of(0, safeLimit));
         }
         return auditLogRepository.findByTenantIdOrderByCreatedAtDesc(tenantId, PageRequest.of(0, safeLimit));
+    }
+
+    private void saveEntry(String tenantId, String actorEmail, String actorRole,
+                           String action, String resourceType, String resourceId,
+                           String details, String ipAddress) {
+        AuditLog entry = AuditLog.create(
+            tenantId,
+            actorEmail != null ? actorEmail : "system@forge.dev",
+            actorRole != null ? actorRole : "SYSTEM",
+            action,
+            resourceType,
+            resourceId,
+            details,
+            ipAddress != null ? ipAddress : "internal"
+        );
+        auditLogRepository.save(entry);
     }
 }

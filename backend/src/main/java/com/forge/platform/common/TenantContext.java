@@ -7,8 +7,17 @@ public final class TenantContext {
         String tenantId,
         String email,
         String role,
-        String fullName
-    ) {}
+        String fullName,
+        String tokenJti
+    ) {
+        public PrincipalContext(String userId, String tenantId, String email, String role, String fullName) {
+            this(userId, tenantId, email, role, fullName, null);
+        }
+
+        public static PrincipalContext system(String tenantId, String workerEmail) {
+            return new PrincipalContext("system", tenantId, workerEmail, "SYSTEM", "FORGE Worker", null);
+        }
+    }
 
     private static final ThreadLocal<PrincipalContext> CURRENT = new ThreadLocal<>();
 
@@ -32,12 +41,18 @@ public final class TenantContext {
 
     public static String requireEmail() {
         PrincipalContext ctx = CURRENT.get();
-        return ctx != null ? ctx.email() : "system@forge.dev";
+        if (ctx == null || ctx.email() == null || ctx.email().isBlank()) {
+            throw new ForbiddenOperationException("Missing authenticated actor email in tenant context");
+        }
+        return ctx.email();
     }
 
     public static String requireRole() {
         PrincipalContext ctx = CURRENT.get();
-        return ctx != null ? ctx.role() : "SYSTEM";
+        if (ctx == null || ctx.role() == null || ctx.role().isBlank()) {
+            throw new ForbiddenOperationException("Missing authenticated actor role in tenant context");
+        }
+        return ctx.role();
     }
 
     public static void clear() {

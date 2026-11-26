@@ -28,6 +28,11 @@ public class RedisForgeCacheService implements ForgeCacheService {
     }
 
     @Override
+    public Optional<String> consumeOnce(String key) {
+        return Optional.ofNullable(redisTemplate.opsForValue().getAndDelete("forge:" + key));
+    }
+
+    @Override
     public void evict(String key) {
         redisTemplate.delete("forge:" + key);
     }

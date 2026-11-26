@@ -141,7 +141,10 @@ export function ErrorBanner({
   onRetry?: () => void;
 }) {
   return (
-    <div className="rounded-xl bg-red-50 border border-red-200 p-4 flex items-center justify-between gap-4">
+    <div
+      role="alert"
+      className="rounded-xl bg-red-50 border border-red-200 p-4 flex items-center justify-between gap-4"
+    >
       <div className="flex items-center gap-2.5 text-xs text-red-900">
         <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
         <span>{message}</span>

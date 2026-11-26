@@ -3,6 +3,9 @@ spring:
     name: forge-platform
   profiles:
     default: local
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
   jpa:
     open-in-view: false
     hibernate:
@@ -16,6 +19,12 @@ spring:
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  task:
+    scheduling:
+      pool:
+        size: 4
   ai:
     openai:
       api-key: ${FORGE_OPENAI_API_KEY:disabled-placeholder-key}
@@ -26,8 +35,14 @@ spring:
 
 server:
   port: ${PORT:8080}
+  shutdown: graceful
   compression:
     enabled: true
+  error:
+    include-stacktrace: never
+    include-message: never
+    include-binding-errors: never
+    include-exception: false
 
 management:
   endpoints:
@@ -36,7 +51,7 @@ management:
         include: health,info,metrics,prometheus
   endpoint:
     health:
-      show-details: always
+      show-details: when-authorized
   tracing:
     sampling:
       probability: 0.1
@@ -52,6 +67,9 @@ resilience4j:
         slidingWindowSize: 10
         failureRateThreshold: 50
         waitDurationInOpenState: 20s
+        ignoreExceptions:
+          - com.forge.platform.common.ForgeException
+          - java.lang.IllegalArgumentException
   retry:
     instances:
       aiReviewEngine:
@@ -60,6 +78,9 @@ resilience4j:
       githubApi:
         maxAttempts: 3
         waitDuration: 400ms
+        ignoreExceptions:
+          - com.forge.platform.common.ForgeException
+          - java.lang.IllegalArgumentException
 
 springdoc:
   api-docs:
@@ -69,18 +90,25 @@ springdoc:
 
 forge:
   security:
-    jwt-secret: ${FORGE_JWT_SECRET:forge-dev-super-secret-jwt-signing-key-at-least-64-characters-long-2026!}
-    jwt-expiration-ms: 86400000
-    encryption-key: ${FORGE_ENCRYPTION_KEY:MDEyMzQ1Njc4OUFCQ0RFRjAxMjM0NTY3ODlBQkNERUY=}
-    default-webhook-secret: ${FORGE_GITHUB_WEBHOOK_SECRET:forge_webhook_dev_secret}
-  github:
-    token: ${FORGE_GITHUB_TOKEN:}
+    jwt-secret: ${FORGE_JWT_SECRET:}
+    jwt-expiration-ms: ${FORGE_JWT_EXPIRATION_MS:900000}
+    refresh-expiration-ms: ${FORGE_REFRESH_EXPIRATION_MS:604800000}
+    encryption-key: ${FORGE_ENCRYPTION_KEY:}
+    encryption-key-id: ${FORGE_ENCRYPTION_KEY_ID:k1}
+    encryption-previous-keys: ${FORGE_ENCRYPTION_PREVIOUS_KEYS:}
+    sse-ticket-ttl-seconds: ${FORGE_SSE_TICKET_TTL_SECONDS:30}
+  webhooks:
+    allow-inline-diff: ${FORGE_WEBHOOKS_ALLOW_INLINE_DIFF:false}
+  seed:
+    enabled: false
   ai:
     provider: ${FORGE_AI_PROVIDER:hybrid}
     openai-api-key: ${FORGE_OPENAI_API_KEY:}
     prompt-version: "forge-review-v2.4"
+    timeout-seconds: ${FORGE_AI_TIMEOUT_SECONDS:20}
   outbox:
     poll-interval-ms: 800
     max-retries: 3
+    lease-seconds: 60
   cors:
     allowed-origins: ${FORGE_CORS_ORIGINS:http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173}

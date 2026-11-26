@@ -38,6 +38,7 @@ public final class ReviewDtos {
         String status,
         String currentStage,
         int riskScore,
+        String mergeDecision,
         String summary,
         String promptVersion,
         String modelUsed,
@@ -45,6 +46,7 @@ public final class ReviewDtos {
         BigDecimal estimatedCostUsd,
         long processingMs,
         boolean publishedToGithub,
+        String publishStatus,
         String githubCommentUrl,
         long findingCount,
         long criticalCount,
@@ -55,18 +57,22 @@ public final class ReviewDtos {
 
     public record DiffFileView(
         String filePath,
+        String changeType,
         String language,
         String originalContent,
         String modifiedContent,
         int addedCount,
-        int removedCount
+        int removedCount,
+        List<String> changedSymbols
     ) {}
 
     public record ReviewDetailDto(
         ReviewSummaryDto review,
         List<DiffFileView> files,
         List<ReviewFindingEntity> findings,
-        List<CodeIntelDtos.ChangeImpactResponse> changeImpacts
+        List<CodeIntelDtos.ChangeImpactResponse> changeImpacts,
+        ChangeRiskEngine.ChangeRiskAssessment riskAssessment,
+        TestSelectionService.TestSelectionPlan testSelectionPlan
     ) {}
 
     public record EvaluationCaseResult(

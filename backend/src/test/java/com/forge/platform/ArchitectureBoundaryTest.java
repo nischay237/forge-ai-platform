@@ -31,6 +31,7 @@ class ArchitectureBoundaryTest {
                 "com.forge.platform.codeintel..",
                 "com.forge.platform.security..",
                 "com.forge.platform.review..",
+                "com.forge.platform.prediction..",
                 "com.forge.platform.ci..",
                 "com.forge.platform.analytics..",
                 "com.forge.platform.bootstrap.."
@@ -47,6 +48,7 @@ class ArchitectureBoundaryTest {
                 "com.forge.platform.codeintel..",
                 "com.forge.platform.security..",
                 "com.forge.platform.review..",
+                "com.forge.platform.prediction..",
                 "com.forge.platform.ci..",
                 "com.forge.platform.analytics.."
             )
@@ -59,6 +61,7 @@ class ArchitectureBoundaryTest {
             .that().resideInAPackage("com.forge.platform.codeintel..")
             .should().dependOnClassesThat().resideInAnyPackage(
                 "com.forge.platform.review..",
+                "com.forge.platform.prediction..",
                 "com.forge.platform.ci..",
                 "com.forge.platform.analytics.."
             )
@@ -70,6 +73,18 @@ class ArchitectureBoundaryTest {
         classes()
             .that().areAnnotatedWith(RestController.class)
             .should().haveSimpleNameEndingWith("Controller")
+            .check(importedClasses);
+    }
+
+    @Test
+    void servicesMustNotUseUnscopedSourceFileFindById() {
+        noClasses()
+            .that().resideInAPackage("com.forge.platform.repository..")
+            .should().callMethod(
+                com.forge.platform.repository.SourceFileJpaRepository.class,
+                "findById",
+                Object.class
+            )
             .check(importedClasses);
     }
 }

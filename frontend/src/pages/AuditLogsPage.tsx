@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { FileClock, Search } from 'lucide-react';
 import { api } from '../lib/api';
-import { Badge, EmptyState, PageHeader, Panel, SkeletonBlock } from '../components/ui';
+import { Badge, EmptyState, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
 import { formatRelativeTime } from '../lib/utils';
 
 export function AuditLogsPage() {
@@ -18,29 +18,37 @@ export function AuditLogsPage() {
         eyebrow="Multi-Tenant Compliance & Traceability"
         title="Audit"
         accentWord="logs."
-        description="Immutable tenant-scoped ledger of authentication, repository connections, webhook rejections, finding approvals, security triages, and settings updates."
+        description="Immutable tenant-scoped ledger of authentication, lockouts, webhook rejections, finding approvals, suppressions, policy updates, and settings changes."
         actions={
           <div className="flex items-center gap-2 h-9 px-3 rounded-md bg-white border border-[#DCDCD5] focus-within:border-[#111111]">
             <Search className="w-3.5 h-3.5 text-stone-400" />
             <input
+              aria-label="Filter audit logs by action"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter action (e.g. REVIEW, WEBHOOK)..."
+              placeholder="Filter action (e.g. REVIEW, WEBHOOK, POLICY)..."
               className="bg-transparent text-xs text-[#111111] placeholder:text-stone-400 focus:outline-none w-56"
             />
           </div>
         }
       />
 
+      {logs.isError && (
+        <ErrorBanner
+          message={logs.error instanceof Error ? logs.error.message : 'Could not load audit logs'}
+          onRetry={() => logs.refetch()}
+        />
+      )}
+
       {logs.isLoading ? (
         <SkeletonBlock className="h-96" />
-      ) : (logs.data ?? []).length === 0 ? (
+      ) : (logs.data ?? []).length === 0 && !logs.isError ? (
         <EmptyState
           icon={FileClock}
           title="No matching audit entries"
           description="Try clearing the action filter to view all recorded tenant events."
         />
-      ) : (
+      ) : !logs.isError ? (
         <Panel className="overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
@@ -78,7 +86,7 @@ export function AuditLogsPage() {
             </table>
           </div>
         </Panel>
-      )}
+      ) : null}
     </div>
   );
 }

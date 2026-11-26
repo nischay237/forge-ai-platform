@@ -16,6 +16,7 @@ public class SpaForwardController {
         "/code-intel",
         "/reviews",
         "/reviews/{reviewId}",
+        "/predictions",
         "/security",
         "/ci",
         "/analytics",

@@ -51,6 +51,9 @@ public class SecurityFindingEntity {
     @Column(nullable = false, columnDefinition = "TEXT")
     private String remediation;
 
+    @Column(name = "fingerprint")
+    private String fingerprint;
+
     @Column(nullable = false)
     private String status;
 
@@ -106,6 +109,8 @@ public class SecurityFindingEntity {
     public int getLineNumber() { return lineNumber; }
     public String getMaskedEvidence() { return maskedEvidence; }
     public String getRemediation() { return remediation; }
+    public String getFingerprint() { return fingerprint; }
+    public void setFingerprint(String fingerprint) { this.fingerprint = fingerprint; }
     public String getStatus() { return status; }
     public Instant getDetectedAt() { return detectedAt; }
     public Instant getUpdatedAt() { return updatedAt; }

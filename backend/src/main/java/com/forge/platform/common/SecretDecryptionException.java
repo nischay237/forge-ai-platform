@@ -1,0 +1,11 @@
+package com.forge.platform.common;
+
+public class SecretDecryptionException extends RuntimeException {
+    public SecretDecryptionException(String message) {
+        super(message);
+    }
+
+    public SecretDecryptionException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}

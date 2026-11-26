@@ -10,11 +10,15 @@ import com.forge.platform.common.SecretCryptoService;
 import com.forge.platform.identity.AuthService;
 import com.forge.platform.identity.Tenant;
 import com.forge.platform.identity.TenantRepository;
+import com.forge.platform.messaging.EngineeringWebhookListener;
 import com.forge.platform.messaging.IdempotencyService;
 import com.forge.platform.messaging.RateLimiterService;
 import com.forge.platform.repository.GithubIngestionClient;
 import com.forge.platform.repository.RepositoryEntity;
 import com.forge.platform.repository.RepositoryJpaRepository;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -31,6 +35,8 @@ import java.util.Map;
 @RequestMapping("/api/v1/webhooks/github")
 public class GithubWebhookController {
 
+    private static final String DUMMY_HMAC_SECRET = "forge-constant-time-unknown-tenant-hmac-dummy-key";
+
     private final TenantRepository tenantRepository;
     private final RepositoryJpaRepository repositoryJpaRepository;
     private final AuthService authService;
@@ -41,6 +47,8 @@ public class GithubWebhookController {
     private final GithubIngestionClient githubIngestionClient;
     private final AuditService auditService;
     private final ObjectMapper objectMapper;
+    private final ObjectProvider<EngineeringWebhookListener> webhookListeners;
+    private final boolean allowInlineDiff;
 
     public GithubWebhookController(
         TenantRepository tenantRepository,
@@ -52,7 +60,9 @@ public class GithubWebhookController {
         ReviewPipelineService reviewPipelineService,
         GithubIngestionClient githubIngestionClient,
         AuditService auditService,
-        ObjectMapper objectMapper
+        ObjectMapper objectMapper,
+        ObjectProvider<EngineeringWebhookListener> webhookListeners,
+        @Value("${forge.webhooks.allow-inline-diff:false}") boolean allowInlineDiff
     ) {
         this.tenantRepository = tenantRepository;
         this.repositoryJpaRepository = repositoryJpaRepository;
@@ -64,6 +74,8 @@ public class GithubWebhookController {
         this.githubIngestionClient = githubIngestionClient;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
+        this.webhookListeners = webhookListeners;
+        this.allowInlineDiff = allowInlineDiff;
     }
 
     @PostMapping("/{tenantSlug}")
@@ -72,32 +84,60 @@ public class GithubWebhookController {
         @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature,
         @RequestHeader(value = "X-GitHub-Event", defaultValue = "pull_request") String eventName,
         @RequestHeader(value = "X-GitHub-Delivery", required = false) String deliveryId,
-        @RequestBody String rawBody
+        @RequestBody String rawBody,
+        HttpServletRequest httpRequest
     ) throws Exception {
-        if (!rateLimiterService.allowRequest("webhook:" + tenantSlug, 60, Duration.ofMinutes(1))) {
+        // 1. Per-source-IP flood guard BEFORE tenant lookup so unauthenticated callers cannot DoS a victim tenant's bucket
+        String clientIp = resolveClientIp(httpRequest);
+        if (!rateLimiterService.allowRequest("webhook-ip:" + clientIp, 120, Duration.ofMinutes(1))) {
             throw new RateLimitExceededException("Webhook rate limit exceeded");
         }
 
-        Tenant tenant = tenantRepository.findBySlug(tenantSlug)
-            .orElseThrow(() -> new ResourceNotFoundException("Workspace not found for slug: " + tenantSlug));
-
-        String secret = authService.resolveTenantWebhookSecret(tenant);
-        if (!cryptoService.verifyGithubSignature(rawBody, secret, signature)) {
-            auditService.record(tenant.getId(), "github-webhook@external", "WEBHOOK",
-                "WEBHOOK_SIGNATURE_REJECTED", "WEBHOOK", deliveryId,
-                "Rejected GitHub webhook with invalid HMAC-SHA256 signature", "webhook");
+        // 2. Lookup tenant and verify HMAC-SHA256 with uniform 401 response (prevents tenant slug enumeration)
+        Tenant tenant = tenantRepository.findBySlug(tenantSlug).orElse(null);
+        if (tenant == null) {
+            cryptoService.verifyGithubSignature(rawBody, DUMMY_HMAC_SECRET, signature);
             throw new ForgeException(HttpStatus.UNAUTHORIZED, "INVALID_WEBHOOK_SIGNATURE",
                 "HMAC-SHA256 signature verification failed");
         }
 
-        String dedupKey = "gh-delivery:" + tenant.getId() + ":" +
-            (deliveryId != null && !deliveryId.isBlank() ? deliveryId : cryptoService.sha256Hex(rawBody));
-        if (!idempotencyService.tryClaimEvent(dedupKey, tenant.getId(), "GITHUB_WEBHOOK")) {
-            return ResponseEntity.ok(Map.of("status", "DUPLICATE_IGNORED", "deliveryId", dedupKey));
+        String secret = authService.resolveTenantWebhookSecret(tenant);
+        if (!cryptoService.verifyGithubSignature(rawBody, secret, signature)) {
+            auditService.recordIsolated(tenant.getId(), "github-webhook@external", "WEBHOOK",
+                "WEBHOOK_SIGNATURE_REJECTED", "WEBHOOK", deliveryId,
+                "Rejected GitHub webhook with invalid HMAC-SHA256 signature", clientIp);
+            throw new ForgeException(HttpStatus.UNAUTHORIZED, "INVALID_WEBHOOK_SIGNATURE",
+                "HMAC-SHA256 signature verification failed");
+        }
+
+        // 3. Authenticated per-tenant rate limit
+        if (!rateLimiterService.allowRequest("webhook-tenant:" + tenant.getId(), 60, Duration.ofMinutes(1))) {
+            throw new RateLimitExceededException("Workspace webhook rate limit exceeded");
         }
 
         if (!"pull_request".equalsIgnoreCase(eventName)) {
-            return ResponseEntity.ok(Map.of("status", "IGNORED_EVENT", "event", eventName));
+            EngineeringWebhookListener listener = webhookListeners.orderedStream()
+                .filter(l -> l.supportsGithubEvent(eventName))
+                .findFirst()
+                .orElse(null);
+            if (listener == null) {
+                return ResponseEntity.ok(Map.of("status", "IGNORED_EVENT", "event", eventName));
+            }
+            String nonPrPayloadHash = cryptoService.sha256Hex(rawBody);
+            String nonPrKey = (deliveryId != null && !deliveryId.isBlank())
+                ? "gh-eng:" + tenant.getId() + ":" + eventName + ":" + deliveryId.trim()
+                : "gh-eng:" + tenant.getId() + ":" + eventName + ":" + nonPrPayloadHash;
+            if (!idempotencyService.tryClaimEvent(nonPrKey, tenant.getId(), "GITHUB_" + eventName.toUpperCase())) {
+                return ResponseEntity.ok(Map.of("status", "DUPLICATE_IGNORED", "deliveryId", nonPrKey));
+            }
+            try {
+                Map<String, Object> result = listener.onGithubEvent(tenant.getId(), eventName, nonPrKey, rawBody);
+                idempotencyService.markCompleted(nonPrKey);
+                return ResponseEntity.accepted().body(result);
+            } catch (Exception ex) {
+                idempotencyService.releaseClaim(nonPrKey);
+                throw ex;
+            }
         }
 
         JsonNode root = objectMapper.readTree(rawBody);
@@ -107,41 +147,80 @@ public class GithubWebhookController {
             return ResponseEntity.ok(Map.of("status", "IGNORED_ACTION", "action", action));
         }
 
-        String repoFullName = root.path("repository").path("full_name").asText("");
-        RepositoryEntity repo = repositoryJpaRepository
-            .findByTenantIdAndFullNameIgnoreCase(tenant.getId(), repoFullName)
-            .orElseThrow(() -> new ResourceNotFoundException("Repository not connected: " + repoFullName));
+        // 4. Replay protection combining deliveryId (when supplied) AND body hash
+        String payloadHash = cryptoService.sha256Hex(rawBody);
+        String deliveryKey = (deliveryId != null && !deliveryId.isBlank())
+            ? "gh-delivery:" + tenant.getId() + ":" + deliveryId.trim()
+            : null;
+        String payloadKey = "gh-payload:" + tenant.getId() + ":" + payloadHash;
 
-        JsonNode pr = root.path("pull_request");
-        int prNumber = pr.path("number").asInt(1);
-        String title = pr.path("title").asText("GitHub PR #" + prNumber);
-        String author = pr.path("user").path("login").asText("github-user");
-        String headRef = pr.path("head").path("ref").asText("feature/pr-" + prNumber);
-        String baseRef = pr.path("base").path("ref").asText(repo.getDefaultBranch());
-        String sha = pr.path("head").path("sha").asText("webhook-sha");
-        String diff = root.path("diff").asText(pr.path("diff").asText(""));
-        if (diff.isBlank()) {
-            try {
+        if (deliveryKey != null && !idempotencyService.tryClaimEvent(deliveryKey, tenant.getId(), "GITHUB_WEBHOOK")) {
+            return ResponseEntity.ok(Map.of("status", "DUPLICATE_IGNORED", "deliveryId", deliveryKey));
+        }
+        if (!idempotencyService.tryClaimEvent(payloadKey, tenant.getId(), "GITHUB_WEBHOOK_PAYLOAD")) {
+            if (deliveryKey != null) {
+                idempotencyService.markCompleted(deliveryKey);
+            }
+            return ResponseEntity.ok(Map.of("status", "DUPLICATE_IGNORED", "deliveryId", deliveryKey != null ? deliveryKey : payloadKey));
+        }
+
+        try {
+            String repoFullName = root.path("repository").path("full_name").asText("");
+            RepositoryEntity repo = repositoryJpaRepository
+                .findByTenantIdAndFullNameIgnoreCase(tenant.getId(), repoFullName)
+                .orElseThrow(() -> new ResourceNotFoundException("Repository not connected: " + repoFullName));
+
+            JsonNode pr = root.path("pull_request");
+            int prNumber = pr.path("number").asInt(1);
+            String title = pr.path("title").asText("GitHub PR #" + prNumber);
+            String author = pr.path("user").path("login").asText("github-user");
+            String headRef = pr.path("head").path("ref").asText("feature/pr-" + prNumber);
+            String baseRef = pr.path("base").path("ref").asText(repo.getDefaultBranch());
+            String sha = pr.path("head").path("sha").asText("webhook-sha");
+
+            String diff = "";
+            if (allowInlineDiff) {
+                diff = root.path("diff").asText(pr.path("diff").asText(""));
+            }
+            if (diff.isBlank()) {
                 String ghToken = authService.resolveTenantGithubToken(tenant);
                 var snapshot = githubIngestionClient.fetchPullRequest(repo.getOwner(), repo.getName(), prNumber, ghToken);
                 diff = snapshot.rawDiff();
-            } catch (Exception ex) {
-                diff = "diff --git a/README.md b/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n+// Webhook PR #" + prNumber;
             }
+
+            ReviewDtos.ReviewSummaryDto review = reviewPipelineService.enqueueReviewForTenant(
+                tenant.getId(),
+                author + "@github",
+                "WEBHOOK",
+                new ReviewDtos.CreateReviewRequest(repo.getId(), prNumber, title, author, headRef, baseRef, sha, diff)
+            );
+
+            if (deliveryKey != null) {
+                idempotencyService.markCompleted(deliveryKey);
+            }
+            idempotencyService.markCompleted(payloadKey);
+
+            return ResponseEntity.accepted().body(Map.of(
+                "status", "ACCEPTED",
+                "reviewId", review.id(),
+                "repository", repo.getFullName(),
+                "prNumber", prNumber
+            ));
+        } catch (Exception ex) {
+            // Release in-progress idempotency claims so legitimate GitHub webhook redeliveries succeed after transient failures
+            if (deliveryKey != null) {
+                idempotencyService.releaseClaim(deliveryKey);
+            }
+            idempotencyService.releaseClaim(payloadKey);
+            throw ex;
         }
+    }
 
-        ReviewDtos.ReviewSummaryDto review = reviewPipelineService.enqueueReviewForTenant(
-            tenant.getId(),
-            author + "@github",
-            "WEBHOOK",
-            new ReviewDtos.CreateReviewRequest(repo.getId(), prNumber, title, author, headRef, baseRef, sha, diff)
-        );
-
-        return ResponseEntity.accepted().body(Map.of(
-            "status", "ACCEPTED",
-            "reviewId", review.id(),
-            "repository", repo.getFullName(),
-            "prNumber", prNumber
-        ));
+    private String resolveClientIp(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim();
+        }
+        return request.getRemoteAddr() != null ? request.getRemoteAddr() : "unknown";
     }
 }
