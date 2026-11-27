@@ -2,9 +2,25 @@
 
 > **"Understand the impact of every code change. Predict what could fail before it reaches production."**
 >
-> Built with Java 21 LTS, Spring Boot 3.5, PostgreSQL 16 (Flyway V1–V6), Apache Kafka, Redis, JavaParser AST, Resilience4j, Spring AI, ArchUnit, OpenTelemetry, and React 18 + TypeScript + Monaco + React Flow.
+> Built with Java 21 LTS, Spring Boot 3.5.16, PostgreSQL 16 (Flyway V1–V6), Apache Kafka, Redis, JavaParser AST, Resilience4j, Spring AI, ArchUnit, OpenTelemetry, and React 18 + TypeScript + Monaco + React Flow.
+>
+> **Public Technical Showcase:** `/showcase` (no login required — interactive architecture diagram, clearly labelled simulated PR walkthrough, engineering trade-offs, direct GitHub source map, interview Q&A, and explicit limitations; zero private tenant data exposed).
 
 ---
+
+## System Architecture
+
+```mermaid
+flowchart LR
+    Browser["React 18 + TS UI\n(/showcase, /reviews, /predictions)"] -->|Bearer JWT + REST| API["Spring Boot 3.5 API\n(Auth, RBAC, TenantContext)"]
+    Browser -->|Single-Use Ticket SSE| SSE["SSE Hub + DB Fallback\n(/api/v1/stream/events)"]
+    GH["GitHub Webhooks\n(Per-Tenant HMAC)"] -->|1 MiB Guard| API
+    API -->|ACID Tx| PG[("PostgreSQL 16\nFlyway V1-V6 + Optional RLS")]
+    PG -->|Atomic Claim Lease| Outbox["OutboxService -> Kafka\n(@RetryableTopic + DLT)"]
+    Outbox --> Workers["AST, Security, Policy &\nPredictive Baseline Workers"]
+    Workers --> SSE
+    API --> Redis[("Redis 7\nCache, Lua Rate Limit, SSE Tickets")]
+```
 
 ## Core Architecture Principle
 
@@ -108,6 +124,47 @@ cp .env.example .env
 docker compose --env-file .env up --build
 ```
 All stateful containers bind exclusively to `127.0.0.1`. See [docs/RUNBOOK.md](docs/RUNBOOK.md) for PostgreSQL RLS activation and secret rotation.
+
+---
+
+## Environment Variables Reference
+
+| Variable | Profile | Required | Purpose |
+|---|---|---|---|
+| `SPRING_PROFILES_ACTIVE` | All | Optional (`local` default) | `local`, `local,demo`, or `prod` (`demo` is blocked when `prod` is active) |
+| `SPRING_DATASOURCE_URL` / `USERNAME` / `PASSWORD` | `prod` | Yes (`prod`) | PostgreSQL 16 JDBC connection (non-localhost, non-H2 enforced by `ProductionSecurityValidator`) |
+| `SPRING_DATA_REDIS_HOST` / `PORT` / `PASSWORD` | `prod` | Yes (`prod`) | Redis 7 connection for resilient cache, Lua rate limiting & fail-closed SSE tickets |
+| `SPRING_KAFKA_BOOTSTRAP_SERVERS` | `prod` | Yes (`prod`) | Kafka broker address for Outbox topics (`forge.pr-review.requested`, `forge.pr-prediction.requested`, `forge.repo-index.requested`) |
+| `FORGE_JWT_SECRET` | `prod` | Yes (`prod`) | Minimum 32-byte random HS256 JWT signing secret |
+| `FORGE_ENCRYPTION_KEY` / `FORGE_ENCRYPTION_KEY_ID` | `prod` | Yes (`prod`) | Base64 32-byte AES-256-GCM key & active key ID (default `k1`) |
+| `FORGE_ENCRYPTION_PREVIOUS_KEYS` | `prod` | Optional | Comma-separated `kid:key` pairs for zero-downtime key rotation |
+| `FORGE_CORS_ORIGINS` | `prod` | Yes (`prod`) | Explicit comma-separated frontend origin(s); wildcard `*` is rejected |
+| `FORGE_OPENAI_API_KEY` / `FORGE_AI_PROVIDER` | All | Optional | Enables optional LLM review enrichment (`HYBRID`); runs deterministically when omitted |
+| `FORGE_SWAGGER_ENABLED` | `prod` | Optional (`false`) | Explicitly opt in to OpenAPI/Swagger UI in production |
+
+---
+
+## API Surface Summary
+
+OpenAPI / Swagger UI is served at `/swagger-ui.html` in `local` mode (disabled by default in `prod`).
+
+| Domain | Key Endpoints | Auth / Role |
+|---|---|---|
+| **Auth & Session** | `POST /api/v1/auth/register`, `/login`, `/refresh`, `/logout`, `GET /api/v1/auth/me` | Public for login/register/refresh; Bearer JWT for `/me` & `/logout` |
+| **Repositories & AST** | `GET/POST /api/v1/repositories`, `POST /api/v1/repositories/{id}/reindex`, `GET /api/v1/repositories/{id}/code-intel/{graph,impact,drift}` | Bearer JWT (`OWNER`/`ADMIN`/`REVIEWER` for writes) |
+| **PR Reviews & Policy** | `GET/POST /api/v1/reviews`, `POST /api/v1/reviews/import-github`, `GET/PUT /api/v1/policies` | Bearer JWT (`OWNER`/`ADMIN` for policy updates) |
+| **Predictive Engine** | `GET /api/v1/predictions/overview`, `GET /api/v1/predictions/{pullRequestId}`, `POST /api/v1/predictions/{pullRequestId}/run`, `POST /api/v1/predictions/history/{tests,deployments,incidents,defects}`, `POST /api/v1/predictions/evaluations/run` | Bearer JWT (`OWNER`/`ADMIN`/`REVIEWER` for ingestion/eval) |
+| **Security & Exports** | `GET /api/v1/security/findings`, `GET /api/v1/security/repositories/{id}/{sbom,sarif}`, `GET/POST/DELETE /api/v1/security/suppressions` | Bearer JWT (`OWNER`/`ADMIN` for suppressions) |
+| **Real-Time SSE** | `POST /api/v1/stream/ticket`, `GET /api/v1/stream/events?ticket=...`, `GET /api/v1/stream/operations` | Bearer JWT for ticket & snapshots; single-use ticket for SSE stream |
+| **Health & Telemetry** | `GET /actuator/health`, `/actuator/health/liveness`, `/actuator/health/readiness`, `/actuator/prometheus` | Probes public; `/actuator/prometheus` requires `OWNER`/`ADMIN` |
+
+---
+
+## Recruiter & Interviewer 2-Minute Demo Walkthrough
+
+1. Start the backend (`cd backend && ./mvnw spring-boot:run`) and frontend (`cd frontend && npm ci && npm run dev`).
+2. Open **`http://localhost:5173/showcase`** (public — no sign-in required) to inspect the interactive architecture diagram, clearly labelled simulated PR walkthrough, engineering trade-offs, source map, interview Q&A, and limitations.
+3. Click **Sign In / Register**, create a fresh isolated workspace on `/login`, connect a starter repository on `/repositories`, and submit a PR diff on `/reviews?new=1` to watch genuine backend SSE stages stream live, inspect the deterministic `PASS`/`WARN`/`BLOCK` verdict, and review explainable predictive evidence on `/predictions`.
 
 ---
 
