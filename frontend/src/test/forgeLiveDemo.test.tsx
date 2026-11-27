@@ -9,22 +9,28 @@ describe('FORGE Interactive Live PR Scanner (/forge & /demo)', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders standalone Live Detection Stream section without cramped scanner drawer or floating popups', () => {
+  it('renders calm progressive-disclosure workspace tabs without bombarding all sections at once', () => {
     render(
       <MemoryRouter initialEntries={['/forge']}>
         <ForgeLiveDemoPage />
       </MemoryRouter>
     );
 
-    expect(screen.getByText(/01 · Incoming GitHub/i)).toBeInTheDocument();
-    expect(screen.getByText(/02 · Live Pull Request Scanner/i)).toBeInTheDocument();
-    expect(screen.getByText(/03 · Live Detection Stream/i)).toBeInTheDocument();
-    expect(screen.getByText(/Issues caught live, one by one\./i)).toBeInTheDocument();
-    expect(screen.queryByText(/Diagnostics Output/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Live PR Scan/i })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: /Impact Map/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Security & CI/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Architecture/i })).toBeInTheDocument();
+
+    // Secondary tabs are hidden until explicitly clicked
+    expect(screen.queryByText(/Click any service to trace its blast radius/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/DISMISS ALL/i)).not.toBeInTheDocument();
+
+    // Switching to Impact Map reveals the AST graph cleanly
+    fireEvent.click(screen.getByRole('tab', { name: /Impact Map/i }));
+    expect(screen.getByText(/Click any service to trace its blast radius/i)).toBeInTheDocument();
   });
 
-  it('streams findings one by one with plain numbers (1, 2, 3...) and no #0 prefix or floating toasts', async () => {
+  it('streams findings one by one with plain numbers (1, 2, 3...) and expands root cause on click', async () => {
     vi.useFakeTimers();
     Element.prototype.scrollIntoView = vi.fn();
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline in test — use fallback sample diff'));
@@ -35,16 +41,13 @@ describe('FORGE Interactive Live PR Scanner (/forge & /demo)', () => {
       </MemoryRouter>
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /Load Sample PR/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Open PR & Start Live Scan/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Load & Scan Sample PR/i }));
 
-    // Flush the mocked rejected GitHub fetch promise
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    // Advance past full scan timeline so all findings pop in sequentially
     await act(async () => {
       vi.advanceTimersByTime(12_000);
     });
@@ -55,5 +58,10 @@ describe('FORGE Interactive Live PR Scanner (/forge & /demo)', () => {
     expect(liveSection?.textContent).toContain('Leaked AWS key found');
     expect(liveSection?.textContent).not.toMatch(/#0[1-9]/);
     expect(screen.queryByText(/DISMISS ALL/i)).not.toBeInTheDocument();
+
+    // Charts are collapsed by default to keep UI calm, and open cleanly on click
+    expect(screen.queryByText(/PR Risk Verdict/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Risk Score/i }));
+    expect(screen.getByText(/PR Risk Verdict/i)).toBeInTheDocument();
   });
 });
