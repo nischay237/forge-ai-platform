@@ -9,7 +9,7 @@ describe('FORGE Interactive Live PR Scanner (/forge & /demo)', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders calm progressive-disclosure workspace tabs without bombarding all sections at once', () => {
+  it('renders luminous hero + 5 focused workspace tabs without bombarding all sections at once', () => {
     render(
       <MemoryRouter initialEntries={['/forge']}>
         <ForgeLiveDemoPage />
@@ -18,19 +18,23 @@ describe('FORGE Interactive Live PR Scanner (/forge & /demo)', () => {
 
     expect(screen.getByRole('tab', { name: /Live PR Scan/i })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tab', { name: /Impact Map/i })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /Security & CI/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Security Shield/i })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /CI & Accuracy/i })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Architecture/i })).toBeInTheDocument();
 
-    // Secondary tabs are hidden until explicitly clicked
+    // Secondary tab panels stay hidden until clicked
     expect(screen.queryByText(/Click any service to trace its blast radius/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/DISMISS ALL/i)).not.toBeInTheDocument();
 
-    // Switching to Impact Map reveals the AST graph cleanly
+    // Switching tabs reveals each dedicated panel cleanly
     fireEvent.click(screen.getByRole('tab', { name: /Impact Map/i }));
     expect(screen.getByText(/Click any service to trace its blast radius/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: /CI & Accuracy/i }));
+    expect(screen.getByText(/8-Case Accuracy Benchmark/i)).toBeInTheDocument();
   });
 
-  it('streams findings one by one with plain numbers (1, 2, 3...) and expands root cause on click', async () => {
+  it('streams findings with plain numbers (1, 2, 3...) and automatically reveals Risk Charts on scan completion', async () => {
     vi.useFakeTimers();
     Element.prototype.scrollIntoView = vi.fn();
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline in test — use fallback sample diff'));
@@ -59,9 +63,12 @@ describe('FORGE Interactive Live PR Scanner (/forge & /demo)', () => {
     expect(liveSection?.textContent).not.toMatch(/#0[1-9]/);
     expect(screen.queryByText(/DISMISS ALL/i)).not.toBeInTheDocument();
 
-    // Charts are collapsed by default to keep UI calm, and open cleanly on click
-    expect(screen.queryByText(/PR Risk Verdict/i)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /Risk Score/i }));
-    expect(screen.getByText(/PR Risk Verdict/i)).toBeInTheDocument();
+    // Charts auto-reveal smoothly once scan completes, and can be toggled closed cleanly
+    expect(screen.getByText(/PR Risk Score/i)).toBeInTheDocument();
+    expect(screen.getByText(/Issues by Severity/i)).toBeInTheDocument();
+    expect(screen.getByText(/Where Risks Live/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Hide Risk Charts/i }));
+    expect(screen.queryByText(/Issues by Severity/i)).not.toBeInTheDocument();
   });
 });
