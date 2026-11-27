@@ -75,7 +75,6 @@ export function LoginPage() {
         <div className="lg:col-span-7 max-w-2xl space-y-5">
           <div className="bg-white p-8 sm:p-10 shadow-[0_20px_60px_rgba(15,23,42,0.12)] border border-white/80 space-y-5">
             <div className="inline-flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.12em] text-stone-500">
-              <span className="w-2 h-2 rounded-full bg-emerald-500" />
               Predictive Engineering &amp; Change Impact Intelligence · Java 21 + Spring Boot
             </div>
 

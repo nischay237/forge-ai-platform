@@ -26,8 +26,9 @@ import {
   Terminal,
 } from 'lucide-react';
 import { useForgeStore } from '../lib/store';
+import { useEngineeringEvidence } from '../lib/engineeringEvidence';
 import { LiveProcessingPanel } from '../components/LiveProcessingPanel';
-import { UnderTheHoodSection } from '../components/EngineeringStatus';
+import { EvidenceStatusPill, UnderTheHoodSection } from '../components/EngineeringStatus';
 import { Badge, Button, ForgeMark, Panel } from '../components/ui';
 import { cn } from '../lib/utils';
 
@@ -274,6 +275,7 @@ const SOURCE_LINKS = [
 
 export function ShowcasePage() {
   const token = useForgeStore((s) => s.token);
+  const { data: liveEvidence } = useEngineeringEvidence();
   const [selectedNodeId, setSelectedNodeId] = useState<string>(ARCH_NODES[0].id);
   const [simStep, setSimStep] = useState<number>(SIMULATED_PR_STAGES.length - 1);
   const [simPlaying, setSimPlaying] = useState(false);
@@ -389,8 +391,8 @@ export function ShowcasePage() {
           {/* 3-Column Problem / Solution / Truth Boundary */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 border-t border-[#EFEFEA]">
             <div className="p-4 rounded-xl bg-[#FAFAF8] border border-[#EAEAE4] space-y-1.5">
-              <div className="text-[10.5px] font-mono uppercase tracking-[0.1em] text-red-700 font-semibold">
-                The Real Engineering Problem
+              <div className="text-[10.5px] font-mono uppercase tracking-[0.1em] text-stone-500 font-semibold">
+                The Problem
               </div>
               <p className="text-xs text-stone-700 leading-relaxed">
                 Line-by-line PR diffs hide downstream dependency blast radius, breaking REST/SQL contracts, N+1 loops,
@@ -398,8 +400,8 @@ export function ShowcasePage() {
               </p>
             </div>
             <div className="p-4 rounded-xl bg-[#FAFAF8] border border-[#EAEAE4] space-y-1.5">
-              <div className="text-[10.5px] font-mono uppercase tracking-[0.1em] text-emerald-700 font-semibold">
-                How FORGE Solves It
+              <div className="text-[10.5px] font-mono uppercase tracking-[0.1em] text-stone-500 font-semibold">
+                Approach
               </div>
               <p className="text-xs text-stone-700 leading-relaxed">
                 Deterministic static analyzers (AST, API/DDL compat, security/SCA) own <code className="font-mono">PASS/WARN/BLOCK</code>{' '}
@@ -408,8 +410,8 @@ export function ShowcasePage() {
               </p>
             </div>
             <div className="p-4 rounded-xl bg-[#FAFAF8] border border-[#EAEAE4] space-y-1.5">
-              <div className="text-[10.5px] font-mono uppercase tracking-[0.1em] text-[#111111] font-semibold">
-                Strict Honesty &amp; Truth Boundary
+              <div className="text-[10.5px] font-mono uppercase tracking-[0.1em] text-stone-500 font-semibold">
+                Design Boundaries
               </div>
               <p className="text-xs text-stone-700 leading-relaxed">
                 No fabricated ML accuracy, no uncalibrated probabilities, no fake progress percentages, and no claims
@@ -580,7 +582,7 @@ export function ShowcasePage() {
         </section>
 
         {/* 3b. Under the Hood — Live CI, Testing, Security, Deployment & Reliability Evidence */}
-        <UnderTheHoodSection />
+        <UnderTheHoodSection evidence={liveEvidence} />
 
         {/* 4. End-to-End PR Analysis Demonstration + Processing Timeline */}
         <section id="demo" className="space-y-4">
@@ -843,14 +845,14 @@ export function ShowcasePage() {
           </div>
         </section>
 
-        {/* 7. Testing & Quality Evidence (Zero Fabricated Metrics) */}
+        {/* 7. Testing & Quality Evidence (Live Status Only — Zero Hardcoded Green Badges) */}
         <section id="evidence" className="space-y-4">
           <div>
             <div className="text-[11px] font-mono uppercase tracking-[0.12em] text-stone-500">
-              Honest Verification Ledger (Zero Fabricated Numbers)
+              Verification Scope
             </div>
             <h2 className="text-xl font-semibold tracking-[-0.025em] text-[#111111] mt-0.5">
-              Testing, Quality Evidence &amp; Unverified Boundaries
+              Testing, Verification &amp; Unverified Boundaries
             </h2>
           </div>
 
@@ -867,37 +869,37 @@ export function ShowcasePage() {
                 <tbody className="divide-y divide-[#EFEFEA]">
                   <tr>
                     <td className="px-5 py-3 font-medium text-[#111111]">Backend JUnit 5, Security, Multi-Tenant, SSE &amp; ArchUnit</td>
-                    <td className="px-5 py-3"><Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">AUTOMATED IN CI</Badge></td>
+                    <td className="px-5 py-3"><EvidenceStatusPill status={liveEvidence?.categories.architecture.status ?? 'unverified'} /></td>
                     <td className="px-5 py-3 text-stone-600">Executed via <code className="font-mono">./mvnw test</code> on Java 21 (H2 PG-mode + MockMvc + ArchUnit boundaries).</td>
                   </tr>
                   <tr>
                     <td className="px-5 py-3 font-medium text-[#111111]">PostgreSQL 16 Flyway V1–V6 Migrations (Testcontainers)</td>
-                    <td className="px-5 py-3"><Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">AUTOMATED IN LINUX CI</Badge></td>
+                    <td className="px-5 py-3"><EvidenceStatusPill status={liveEvidence?.categories.testing.status ?? 'unverified'} /></td>
                     <td className="px-5 py-3 text-stone-600"><code className="font-mono">PostgresMigrationContainersIT</code> runs against real PostgreSQL 16 container in GitHub Actions.</td>
                   </tr>
                   <tr>
                     <td className="px-5 py-3 font-medium text-[#111111]">Frontend TypeScript, Vitest, Production Build &amp; Prod npm Audit</td>
-                    <td className="px-5 py-3"><Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">AUTOMATED IN CI</Badge></td>
+                    <td className="px-5 py-3"><EvidenceStatusPill status={liveEvidence?.categories.testing.status ?? 'unverified'} /></td>
                     <td className="px-5 py-3 text-stone-600"><code className="font-mono">npm audit --omit=dev --audit-level=high</code>, <code className="font-mono">tsc --noEmit</code>, Vitest, and Vite production bundle.</td>
                   </tr>
                   <tr>
                     <td className="px-5 py-3 font-medium text-[#111111]">Docker Production Images &amp; Compose Config</td>
-                    <td className="px-5 py-3"><Badge className="bg-emerald-50 text-emerald-800 border-emerald-200">AUTOMATED IN LINUX CI</Badge></td>
+                    <td className="px-5 py-3"><EvidenceStatusPill status={liveEvidence?.categories.deployment.status ?? 'unverified'} /></td>
                     <td className="px-5 py-3 text-stone-600">CI validates <code className="font-mono">docker compose config -q</code> and builds frontend, backend, and unified single-container images.</td>
                   </tr>
                   <tr>
                     <td className="px-5 py-3 font-medium text-[#111111]">Code Coverage Percentage (JaCoCo / Istanbul)</td>
-                    <td className="px-5 py-3"><Badge className="bg-stone-100 text-stone-700 border-stone-200">Not verified</Badge></td>
-                    <td className="px-5 py-3 text-stone-600">No coverage percentage gate is configured; FORGE intentionally avoids citing unmeasured coverage percentages.</td>
+                    <td className="px-5 py-3"><EvidenceStatusPill status="unverified" /></td>
+                    <td className="px-5 py-3 text-stone-600">No coverage percentage gate is configured; FORGE avoids reporting unmeasured coverage percentages.</td>
                   </tr>
                   <tr>
                     <td className="px-5 py-3 font-medium text-[#111111]">Production Load / Latency Benchmarks &amp; Live User Traffic</td>
-                    <td className="px-5 py-3"><Badge className="bg-stone-100 text-stone-700 border-stone-200">Not verified</Badge></td>
+                    <td className="px-5 py-3"><EvidenceStatusPill status="unverified" /></td>
                     <td className="px-5 py-3 text-stone-600">No multi-node production load test or live APM traffic telemetry has been executed.</td>
                   </tr>
                   <tr>
                     <td className="px-5 py-3 font-medium text-[#111111]">Trained Supervised ML Model Accuracy</td>
-                    <td className="px-5 py-3"><Badge className="bg-stone-100 text-stone-700 border-stone-200">Not verified</Badge></td>
+                    <td className="px-5 py-3"><EvidenceStatusPill status="unverified" /></td>
                     <td className="px-5 py-3 text-stone-600">No ML model is trained; predictions run deterministic baselines with chronological held-out evaluation once real outcomes exist.</td>
                   </tr>
                 </tbody>
@@ -938,14 +940,14 @@ export function ShowcasePage() {
           </div>
         </section>
 
-        {/* 9. Technical Interview Walkthrough */}
+        {/* 9. System Design Notes & Technical Q&A */}
         <section id="walkthrough" className="space-y-4">
           <div>
             <div className="text-[11px] font-mono uppercase tracking-[0.12em] text-stone-500">
-              Engineering Interview Deep-Dive
+              System Design Notes
             </div>
             <h2 className="text-xl font-semibold tracking-[-0.025em] text-[#111111] mt-0.5">
-              Technical Interview Walkthrough
+              Frequently Asked Architecture Questions
             </h2>
           </div>
           <div className="space-y-2.5">
