@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
+  ArrowDown,
   ArrowLeft,
   ArrowUpRight,
   BarChart3,
@@ -13,7 +14,6 @@ import {
   Database,
   FileCode2,
   GitPullRequest,
-  Globe,
   KeyRound,
   Layers,
   Loader2,
@@ -1058,9 +1058,11 @@ export function ForgeLiveDemoPage() {
       {/* ================================================================== */}
       {/* CALM, MINIMAL STICKY HEADER                                        */}
       {/* ================================================================== */}
-      <header className="sticky top-0 z-40 bg-[#F9F8F5]/90 backdrop-blur-md border-b border-stone-200/80">
-        <div className="max-w-[1160px] mx-auto px-5 sm:px-8 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
+      {/* STICKY TOP NAVBAR — DIRECT JUMP TO FOCUSED WORKSPACE TABS          */}
+      {/* ================================================================== */}
+      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-stone-200/90">
+        <div className="max-w-[1320px] mx-auto px-5 sm:px-8 h-16 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
             <Link
               to="/showcase"
               className="inline-flex items-center gap-1.5 text-xs font-medium text-stone-500 hover:text-[#09090B] transition-colors"
@@ -1068,29 +1070,83 @@ export function ForgeLiveDemoPage() {
               <ArrowLeft className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Showcase</span>
             </Link>
-            <span className="text-stone-300">/</span>
+            <span className="text-stone-300">|</span>
             <button
               onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-              className="flex items-center gap-2 cursor-pointer"
+              className="flex items-center gap-2.5 cursor-pointer"
             >
-              <div className="w-7 h-7 rounded-lg bg-[#09090B] text-white flex items-center justify-center">
-                <ScanLine className="w-3.5 h-3.5" />
+              <div className="w-7 h-7 rounded-md bg-[#09090B] text-white flex items-center justify-center">
+                <ScanLine className="w-4 h-4" />
               </div>
-              <span className="font-semibold text-[15px] tracking-[-0.02em] text-[#09090B]" style={FONT_DISPLAY}>
+              <span className="font-semibold text-[16px] tracking-[-0.025em] text-[#09090B]" style={FONT_DISPLAY}>
                 Forge
               </span>
             </button>
           </div>
 
-          <div className="flex items-center gap-3">
+          <nav className="hidden lg:flex items-center gap-6 text-[13px] font-medium text-stone-600">
+            {[
+              {
+                label: 'Incoming GitHub',
+                onClick: () => {
+                  setActiveTab('scan');
+                  setTimeout(() => scrollToElement('workspace-stage'), 30);
+                },
+              },
+              {
+                label: 'Live Scan',
+                onClick: () => {
+                  setActiveTab('scan');
+                  setTimeout(() => scrollToElement('live-scanner'), 30);
+                },
+              },
+              {
+                label: 'Report & Fixes',
+                onClick: () => {
+                  setActiveTab('scan');
+                  setTimeout(() => scrollToElement('live-diagnostics'), 30);
+                },
+              },
+              {
+                label: 'Impact Map',
+                onClick: () => {
+                  setActiveTab('impact');
+                  setTimeout(() => scrollToElement('workspace-stage'), 30);
+                },
+              },
+              {
+                label: 'Security',
+                onClick: () => {
+                  setActiveTab('security-ci');
+                  setTimeout(() => scrollToElement('workspace-stage'), 30);
+                },
+              },
+              {
+                label: 'Builds & Proof',
+                onClick: () => {
+                  setActiveTab('architecture');
+                  setTimeout(() => scrollToElement('workspace-stage'), 30);
+                },
+              },
+            ].map((item) => (
+              <button
+                key={item.label}
+                onClick={item.onClick}
+                className="hover:text-[#09090B] transition-colors cursor-pointer"
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="flex items-center gap-2.5">
             <a
               href="https://github.com/nischay237/forge-ai-platform"
               target="_blank"
               rel="noreferrer"
-              className="hidden sm:inline-flex items-center gap-1 text-xs font-medium text-stone-600 hover:text-[#09090B] transition-colors px-2 py-1"
+              className="hidden sm:inline-flex items-center gap-1 h-9 px-3.5 rounded-lg border border-stone-200 hover:border-stone-400 text-xs font-medium text-stone-700 hover:text-[#09090B] transition-colors"
             >
-              GitHub
-              <ArrowUpRight className="w-3.5 h-3.5" />
+              GitHub Repo <ArrowUpRight className="w-3.5 h-3.5" />
             </a>
             <button
               onClick={handleLoadAndScanSample}
@@ -1114,65 +1170,173 @@ export function ForgeLiveDemoPage() {
       </header>
 
       {/* ================================================================== */}
-      {/* BREATHABLE, EDITORIAL HERO — ZERO VISUAL CLUTTER                   */}
+      {/* HERO: LUMINOUS SWISS-GRID PRODUCT LAUNCH HERO                      */}
       {/* ================================================================== */}
-      <section className="pt-14 pb-12 sm:pt-20 sm:pb-16 px-5 sm:px-8 border-b border-stone-200/80 bg-white">
-        <div className="max-w-[1160px] mx-auto">
-          <div className="max-w-2xl space-y-5">
-            <div
-              className="inline-flex items-center gap-2 text-[11.5px] font-medium text-stone-500 uppercase tracking-[0.1em]"
-              style={FONT_MONO}
-            >
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
-              Automated PR Intelligence · Java 21 + Spring Boot
+      <section className="relative overflow-hidden border-b border-stone-200">
+        <div
+          className="relative"
+          style={{
+            backgroundImage: `
+              linear-gradient(to right, rgba(255,255,255,0.44) 1px, transparent 1px),
+              linear-gradient(to bottom, rgba(255,255,255,0.44) 1px, transparent 1px),
+              radial-gradient(ellipse 60% 80% at 8% 32%, #1D6E86 0%, #3E9BB2 38%, transparent 72%),
+              radial-gradient(ellipse 55% 65% at 62% 24%, #6EE7F5 0%, #C8F3FB 46%, transparent 76%),
+              radial-gradient(ellipse 50% 60% at 54% 82%, #E5C8FA 0%, #F7D7EE 48%, transparent 75%),
+              radial-gradient(ellipse 55% 70% at 92% 76%, #E85D1F 0%, #F58F4B 44%, transparent 78%),
+              linear-gradient(135deg, #2B839C 0%, #98E6F2 36%, #F3E3FA 64%, #EF7D3B 100%)
+            `,
+            backgroundSize: '56px 56px, 56px 56px, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%',
+          }}
+        >
+          <div className="max-w-[1320px] mx-auto px-5 sm:px-8 py-12 sm:py-16 lg:py-20">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+              <div className="lg:col-span-7">
+                <div className="bg-white p-8 sm:p-11 lg:p-12 shadow-[0_20px_60px_rgba(15,23,42,0.12)] border border-white/80 max-w-2xl rounded-xl">
+                  <div className="inline-flex items-center gap-2 text-xs font-medium text-stone-500 mb-5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                    Automated Code Review &amp; Release Safety · Java 21 + Spring Boot
+                  </div>
+
+                  <h1
+                    className="text-3xl sm:text-[44px] lg:text-[48px] font-semibold tracking-[-0.035em] leading-[1.08] text-[#09090B]"
+                    style={FONT_DISPLAY}
+                  >
+                    <span className="bg-[#EFE8FF]/85 px-1.5 box-decoration-clone">
+                      Catch bugs, leaks, and breaking changes before you merge.
+                    </span>
+                  </h1>
+
+                  <p className="mt-5 text-sm sm:text-[16px] font-normal text-stone-600 leading-relaxed max-w-xl">
+                    Forge automatically scans every pull request in real time. Watch it inspect live
+                    GitHub code, generate a clear risk report with 1-click fixes, and pause for
+                    human approval before anything posts to GitHub.
+                  </p>
+
+                  <div className="mt-7 flex flex-wrap items-center gap-3">
+                    <button
+                      onClick={handleLoadAndScanSample}
+                      disabled={isScanningNow}
+                      className="h-11 px-6 rounded-lg bg-[#09090B] hover:bg-[#27272A] text-white text-[13.5px] font-medium inline-flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      Start Live PR Scan
+                    </button>
+                    <button
+                      onClick={() => {
+                        setActiveTab('scan');
+                        setShowCharts(true);
+                        setTimeout(() => scrollToElement('live-diagnostics'), 30);
+                      }}
+                      className="h-11 px-5 rounded-lg bg-white hover:bg-stone-50 text-[#09090B] border border-stone-300 text-[13.5px] font-medium inline-flex items-center gap-2 transition-colors cursor-pointer"
+                    >
+                      View Scan Report &amp; Charts
+                      <ArrowDown className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="lg:col-span-5 relative grid grid-cols-1 sm:grid-cols-2 gap-4 lg:gap-5">
+                <div
+                  onClick={() => {
+                    setActiveTab('impact');
+                    setTimeout(() => scrollToElement('workspace-stage'), 30);
+                  }}
+                  className="bg-white/95 backdrop-blur-md rounded-2xl p-5 border border-white shadow-[0_18px_40px_rgba(15,23,42,0.12)] hover:-translate-y-0.5 transition-all cursor-pointer"
+                >
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#09090B] mb-3.5">
+                    <Network className="w-4 h-4 text-sky-700" />
+                    See Impact
+                  </div>
+                  <div className="space-y-2">
+                    {[
+                      'Scan full codebase structure',
+                      'Spot every service a change affects',
+                      'Show exact tests to re-run',
+                    ].map((t) => (
+                      <div
+                        key={t}
+                        className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-[#F8F8F6] border border-stone-200/70 text-[12px] font-medium text-stone-700"
+                      >
+                        <Check className="w-3.5 h-3.5 text-[#09090B] shrink-0" />
+                        <span>{t}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div
+                  onClick={() => {
+                    setActiveTab('security-ci');
+                    setTimeout(() => scrollToElement('workspace-stage'), 30);
+                  }}
+                  className="bg-white/95 backdrop-blur-md rounded-2xl p-5 border border-white shadow-[0_18px_40px_rgba(15,23,42,0.12)] sm:translate-y-7 hover:sm:translate-y-6 transition-all cursor-pointer"
+                >
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#09090B] mb-3.5">
+                    <ShieldCheck className="w-4 h-4 text-emerald-700" />
+                    Protect
+                  </div>
+                  <div className="space-y-2">
+                    {[
+                      'Hide leaked API keys automatically',
+                      'Stop hidden AI prompt attacks',
+                      'Require human sign-off to post',
+                    ].map((t) => (
+                      <div
+                        key={t}
+                        className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-[#F8F8F6] border border-stone-200/70 text-[12px] font-medium text-stone-700"
+                      >
+                        <Check className="w-3.5 h-3.5 text-[#09090B] shrink-0" />
+                        <span>{t}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div
+                  onClick={() => {
+                    setActiveTab('architecture');
+                    setTimeout(() => scrollToElement('workspace-stage'), 30);
+                  }}
+                  className="bg-white/95 backdrop-blur-md rounded-2xl p-5 border border-white shadow-[0_18px_40px_rgba(15,23,42,0.12)] sm:col-span-2 sm:max-w-[300px] sm:mx-auto sm:translate-y-2 hover:sm:translate-y-1 transition-all cursor-pointer"
+                >
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#09090B] mb-3.5">
+                    <Activity className="w-4 h-4 text-amber-700" />
+                    Verify
+                  </div>
+                  <div className="space-y-2">
+                    {[
+                      'Explain failed builds in plain English',
+                      'Tested with 0% false alarms',
+                      'Zero dropped events via Kafka',
+                    ].map((t) => (
+                      <div
+                        key={t}
+                        className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-[#F8F8F6] border border-stone-200/70 text-[12px] font-medium text-stone-700"
+                      >
+                        <Check className="w-3.5 h-3.5 text-[#09090B] shrink-0" />
+                        <span>{t}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
+          </div>
+        </div>
 
-            <h1
-              className="text-3xl sm:text-[46px] font-semibold tracking-[-0.035em] leading-[1.08] text-[#09090B]"
-              style={FONT_DISPLAY}
-            >
-              Catch bugs, leaked keys, and breaking changes before merge.
-            </h1>
-
-            <p className="text-[15.5px] sm:text-[17px] text-stone-600 leading-relaxed max-w-xl">
-              Inspect any GitHub Pull Request line by line, trace affected services across your
-              codebase, and require human sign-off before anything posts.
-            </p>
-
-            <div className="pt-2 flex flex-wrap items-center gap-3">
-              <button
-                onClick={handleLoadAndScanSample}
-                disabled={isScanningNow}
-                className="h-11 px-6 rounded-xl bg-[#09090B] hover:bg-[#27272A] text-white text-[13.5px] font-medium inline-flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-60"
-              >
-                <Play className="w-3.5 h-3.5 fill-current" />
-                Try Live PR Scan
-              </button>
-              <button
-                onClick={() => {
-                  setActiveTab('scan');
-                  setTimeout(() => scrollToElement('workspace-stage'), 30);
-                }}
-                className="h-11 px-5 rounded-xl bg-[#F9F8F5] hover:bg-stone-100 text-[#09090B] border border-stone-200 text-[13.5px] font-medium inline-flex items-center gap-2 transition-colors cursor-pointer"
-              >
-                <Globe className="w-3.5 h-3.5 text-stone-500" />
-                Paste Any GitHub PR
-              </button>
-            </div>
-
-            <div
-              className="pt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-stone-400"
-              style={FONT_MONO}
-            >
-              <span>Java 21</span>
-              <span>·</span>
-              <span>Spring Boot 3.5</span>
-              <span>·</span>
-              <span>Apache Kafka</span>
-              <span>·</span>
-              <span>PostgreSQL</span>
-              <span>·</span>
-              <span>JavaParser AST</span>
+        {/* Clean Stack Strip */}
+        <div className="bg-[#09090B] text-white py-4 px-5 sm:px-8">
+          <div className="max-w-[1320px] mx-auto flex flex-wrap items-center justify-between gap-4">
+            <span className="text-xs font-medium text-stone-300" style={FONT_MONO}>
+              GitHub Sync · <span className="text-white">{prCleared ? 'Ready for any public PR' : activePr.fullName}</span>
+            </span>
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs font-medium text-stone-400">
+              {['Java 21 LTS', 'Spring Boot 3.5', 'Apache Kafka', 'PostgreSQL', 'Redis 7', 'JavaParser AST', 'ArchUnit'].map(
+                (t) => (
+                  <span key={t} className="hover:text-white transition-colors">{t}</span>
+                )
+              )}
             </div>
           </div>
         </div>
