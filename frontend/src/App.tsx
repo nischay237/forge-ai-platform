@@ -8,6 +8,9 @@ import { AppShell } from './components/AppShell';
 import { SkeletonBlock } from './components/ui';
 import { LoginPage } from './pages/LoginPage';
 
+const ShowcasePage = lazy(() =>
+  import('./pages/ShowcasePage').then((m) => ({ default: m.ShowcasePage }))
+);
 const OverviewPage = lazy(() => import('./pages/OverviewPage').then((m) => ({ default: m.OverviewPage })));
 const RepositoriesPage = lazy(() =>
   import('./pages/RepositoriesPage').then((m) => ({ default: m.RepositoriesPage }))
@@ -78,6 +81,7 @@ export function App() {
         <Suspense fallback={<PageFallback />}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/showcase" element={<ShowcasePage />} />
             <Route
               path="/"
               element={

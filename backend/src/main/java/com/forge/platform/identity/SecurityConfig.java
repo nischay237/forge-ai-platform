@@ -63,7 +63,7 @@ public class SecurityConfig {
                 auth.requestMatchers(HttpMethod.OPTIONS, "/**").permitAll();
                 auth.requestMatchers(
                     "/", "/index.html", "/assets/**", "/favicon.ico",
-                    "/login", "/repositories", "/code-intel", "/reviews", "/reviews/**",
+                    "/login", "/showcase", "/repositories", "/code-intel", "/reviews", "/reviews/**",
                     "/predictions", "/security", "/ci", "/analytics", "/audit", "/settings"
                 ).permitAll();
                 auth.requestMatchers(

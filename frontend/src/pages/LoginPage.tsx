@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Activity, ArrowRight, Check, Lock, Network, ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
 import { useForgeStore } from '../lib/store';
@@ -42,11 +42,17 @@ export function LoginPage() {
           <ForgeMark className="w-6 h-6" />
           <span className="font-semibold text-[15px] tracking-[-0.03em]">Forge</span>
         </div>
-        <div className="hidden sm:flex items-center gap-6 text-xs font-mono text-stone-500">
-          <span>Java 21 LTS</span>
-          <span>Spring Boot 3.5</span>
-          <span>Predictive Risk Engine</span>
-          <span>AST + Security Intel</span>
+        <div className="flex items-center gap-4 sm:gap-6 text-xs font-mono text-stone-500">
+          <span className="hidden md:inline">Java 21 LTS</span>
+          <span className="hidden md:inline">Spring Boot 3.5</span>
+          <span className="hidden sm:inline">Predictive Risk Engine</span>
+          <Link
+            to="/showcase"
+            className="h-8 px-3 rounded-md border border-[#DCDCD5] bg-[#FAFAF8] hover:bg-[#111111] hover:text-white text-[#111111] font-sans font-medium inline-flex items-center gap-1.5 transition-colors"
+          >
+            Engineering Showcase
+            <ArrowRight className="w-3 h-3" />
+          </Link>
         </div>
       </header>
 

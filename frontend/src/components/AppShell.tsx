@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { Command, LogOut, Plus } from 'lucide-react';
 import { api } from '../lib/api';
 import { useForgeStore } from '../lib/store';
@@ -98,6 +98,13 @@ export function AppShell() {
                 ⌘K
               </kbd>
             </button>
+
+            <Link
+              to="/showcase"
+              className="hidden lg:inline-flex items-center h-8 px-2.5 rounded-md border border-[#E2E2DC] bg-[#FAFAF8] hover:bg-stone-100 text-xs font-medium text-stone-700 hover:text-[#111111] transition-colors"
+            >
+              Showcase
+            </Link>
 
             <Button size="sm" onClick={() => navigate('/reviews?new=1')}>
               <Plus className="w-3.5 h-3.5" />
