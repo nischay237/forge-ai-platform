@@ -1,0 +1,73 @@
+groups:
+  - name: forge-reliability-alerts
+    interval: 30s
+    rules:
+      - alert: ForgeOutboxBacklogLag
+        expr: forge_outbox_oldest_pending_age_seconds > 60
+        for: 2m
+        labels:
+          severity: warning
+          service: forge-backend
+        annotations:
+          summary: "FORGE transactional outbox backlog age exceeds 60s"
+          description: "Oldest pending outbox event has waited {{ $value }}s. Inspect Kafka broker health and OutboxService worker logs."
+
+      - alert: ForgeOutboxDeadLetterDetected
+        expr: forge_outbox_dead_letter > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: forge-backend
+        annotations:
+          summary: "FORGE outbox has {{ $value }} dead-lettered event(s)"
+          description: "Check outbox_events.last_error, resolve root cause, and requeue via OutboxService.requeueDeadLetterEvents(tenantId)."
+
+      - alert: ForgeKafkaDltEvents
+        expr: increase(forge_kafka_dlt_events_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: forge-backend
+        annotations:
+          summary: "FORGE routed domain event(s) to Kafka Dead-Letter Topic"
+          description: "One or more pr-review, pr-prediction, or repo-index events exhausted retries and landed in *.dlt. Correlate via X-Correlation-Id and audit_logs."
+
+      - alert: ForgeRedisErrorsElevated
+        expr: increase(forge_redis_errors_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          service: forge-backend
+        annotations:
+          summary: "Elevated Redis errors on FORGE backend ({{ $labels.operation }})"
+          description: "Redis errors exceeded 5 in 5m. Cache degrades safely, while SSE ticket redemption fails closed until Redis recovers."
+
+      - alert: ForgePrReviewHighAvgLatency
+        expr: (rate(forge_reviews_duration_seconds_sum[5m]) / clamp_min(rate(forge_reviews_duration_seconds_count[5m]), 1e-9)) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: forge-backend
+        annotations:
+          summary: "Average PR review pipeline duration exceeds 10s"
+          description: "Inspect LLM timeout fallback rate, AST parser load, and PostgreSQL query latency."
+
+      - alert: ForgePredictionFailuresDetected
+        expr: increase(forge_predictions_failed_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: forge-backend
+        annotations:
+          summary: "Predictive engineering pipeline recorded failure(s)"
+          description: "Verify historical store connectivity and PR feature extractor logs via X-Correlation-Id."
+
+      - alert: ForgeHikariPoolSaturation
+        expr: hikaricp_connections_pending > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: forge-backend
+        annotations:
+          summary: "PostgreSQL HikariCP connection pool has pending threads"
+          description: "Database connection requests are queuing ({{ $value }} pending). Correlate slow queries via X-Correlation-Id."

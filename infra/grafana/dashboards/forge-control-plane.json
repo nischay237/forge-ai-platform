@@ -1,0 +1,174 @@
+{
+  "uid": "forge-control-plane",
+  "title": "FORGE — Predictive Engineering Control Plane",
+  "description": "Real-time SRE telemetry for PR reviews, predictive risk baselines, Transactional Outbox, Kafka DLT, SSE streams, webhooks, Redis, and HikariCP.",
+  "tags": ["forge", "spring-boot", "outbox", "sse", "predictive"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Outbox Pending Events",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "forge_outbox_pending", "legendFormat": "Pending", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 25 },
+              { "color": "red", "value": 100 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Outbox Dead-Letter Events",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "forge_outbox_dead_letter", "legendFormat": "Dead Letter", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Oldest Outbox Pending Age (s)",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "forge_outbox_oldest_pending_age_seconds", "legendFormat": "Lag (s)", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 30 },
+              { "color": "red", "value": 60 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Active SSE Connections",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "forge_sse_connections_active", "legendFormat": "Active Clients", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "PR Review & Predictive Engine Throughput (5m rate)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "rate(forge_reviews_completed_total[5m])", "legendFormat": "PR Reviews / s", "refId": "A" },
+        { "expr": "rate(forge_predictions_completed_total[5m])", "legendFormat": "Predictions / s", "refId": "B" },
+        { "expr": "rate(forge_predictions_failed_total[5m])", "legendFormat": "Prediction Failures / s", "refId": "C" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Pipeline Duration — Avg & Max (s)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "rate(forge_reviews_duration_seconds_sum[5m]) / clamp_min(rate(forge_reviews_duration_seconds_count[5m]), 1e-9)",
+          "legendFormat": "PR Review Avg (s)",
+          "refId": "A"
+        },
+        {
+          "expr": "forge_reviews_duration_seconds_max",
+          "legendFormat": "PR Review Max (s)",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(forge_predictions_duration_seconds_sum[5m]) / clamp_min(rate(forge_predictions_duration_seconds_count[5m]), 1e-9)",
+          "legendFormat": "Prediction Avg (s)",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "SSE Delivery, Webhooks & Kafka DLT",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "rate(forge_sse_events_delivered_total[5m])", "legendFormat": "SSE Delivered / s", "refId": "A" },
+        { "expr": "rate(forge_sse_events_dropped_total[5m])", "legendFormat": "SSE Dropped / s", "refId": "B" },
+        { "expr": "sum by (outcome) (rate(forge_webhooks_processed_total[5m]))", "legendFormat": "Webhook {{outcome}} / s", "refId": "C" },
+        { "expr": "increase(forge_kafka_dlt_events_total[5m])", "legendFormat": "Kafka DLT (5m)", "refId": "D" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "PostgreSQL HikariCP & Redis Health",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        { "expr": "hikaricp_connections_active", "legendFormat": "HikariCP Active", "refId": "A" },
+        { "expr": "hikaricp_connections_pending", "legendFormat": "HikariCP Pending", "refId": "B" },
+        { "expr": "sum by (operation) (increase(forge_redis_errors_total[5m]))", "legendFormat": "Redis Errors ({{operation}})", "refId": "C" }
+      ]
+    }
+  ]
+}

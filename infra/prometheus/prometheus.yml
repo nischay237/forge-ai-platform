@@ -2,6 +2,9 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 # NOTE: /actuator/prometheus requires OWNER/ADMIN JWT authentication in SecurityConfig.
 # For production scraping, supply a dedicated service-account token via authorization.credentials_file
 # or expose a separate internal management port restricted to the cluster metrics network.
