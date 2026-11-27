@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Activity, ArrowRight, Check, Lock, Network, ShieldCheck } from 'lucide-react';
 import { api } from '../lib/api';
 import { useForgeStore } from '../lib/store';
+import { SystemStatusIndicator } from '../components/EngineeringStatus';
 import { Button, ForgeMark } from '../components/ui';
 
 export function LoginPage() {
@@ -42,16 +43,15 @@ export function LoginPage() {
           <ForgeMark className="w-6 h-6" />
           <span className="font-semibold text-[15px] tracking-[-0.03em]">Forge</span>
         </div>
-        <div className="flex items-center gap-4 sm:gap-6 text-xs font-mono text-stone-500">
+        <div className="flex items-center gap-5 text-xs font-mono text-stone-500">
           <span className="hidden md:inline">Java 21 LTS</span>
           <span className="hidden md:inline">Spring Boot 3.5</span>
           <span className="hidden sm:inline">Predictive Risk Engine</span>
           <Link
             to="/showcase"
-            className="h-8 px-3 rounded-md border border-[#DCDCD5] bg-[#FAFAF8] hover:bg-[#111111] hover:text-white text-[#111111] font-sans font-medium inline-flex items-center gap-1.5 transition-colors"
+            className="font-sans text-xs font-medium text-stone-600 hover:text-[#111111] transition-colors"
           >
-            Engineering Showcase
-            <ArrowRight className="w-3 h-3" />
+            Product Overview
           </Link>
         </div>
       </header>
@@ -90,6 +90,16 @@ export function LoginPage() {
               baselines, OpenAPI &amp; SQL migration checks, security scanning, and Policy-as-Code merge decisions
               backed by explicit evidence.
             </p>
+
+            <div className="pt-3 border-t border-stone-100 flex flex-wrap items-center justify-between gap-3">
+              <SystemStatusIndicator />
+              <Link
+                to="/showcase"
+                className="text-[11px] font-mono text-stone-500 hover:text-[#111111] transition-colors"
+              >
+                How FORGE works →
+              </Link>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
@@ -270,6 +280,26 @@ export function LoginPage() {
           </div>
         </div>
       </div>
+
+      <footer className="border-t border-stone-200 bg-white px-6 sm:px-10 py-3.5 flex flex-wrap items-center justify-between gap-3 text-[11px] text-stone-500">
+        <span className="font-mono">FORGE · Predictive Software Engineering Intelligence</span>
+        <div className="flex items-center gap-5">
+          <Link to="/showcase" className="hover:text-[#111111] transition-colors">
+            Product Overview
+          </Link>
+          <Link to="/engineering" className="hover:text-[#111111] transition-colors">
+            Engineering &amp; Reliability
+          </Link>
+          <a
+            href="https://github.com/nischay237/forge-ai-platform"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hover:text-[#111111] transition-colors"
+          >
+            GitHub
+          </a>
+        </div>
+      </footer>
     </div>
   );
 }

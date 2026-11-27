@@ -15,6 +15,7 @@ import {
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { api } from '../lib/api';
 import { useForgeStore } from '../lib/store';
+import { SystemStatusIndicator } from '../components/EngineeringStatus';
 import { Badge, Button, ErrorBanner, PageHeader, Panel, SkeletonBlock } from '../components/ui';
 import { formatRelativeTime, mergeDecisionClasses, severityClasses, statusClasses } from '../lib/utils';
 
@@ -153,9 +154,13 @@ export function OverviewPage() {
               </span>
             </span>
           </div>
-          <span className="font-mono text-[11px] text-stone-500 tabular-nums">
-            {data.totalTokensUsed.toLocaleString()} tokens analyzed
-          </span>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="font-mono text-[11px] text-stone-500 tabular-nums">
+              {data.totalTokensUsed.toLocaleString()} tokens analyzed
+            </span>
+            <span className="text-stone-300 hidden sm:inline">·</span>
+            <SystemStatusIndicator />
+          </div>
         </Panel>
       )}
 

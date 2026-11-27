@@ -13,6 +13,7 @@ public class SpaForwardController {
     @GetMapping({
         "/login",
         "/showcase",
+        "/engineering",
         "/repositories",
         "/code-intel",
         "/reviews",

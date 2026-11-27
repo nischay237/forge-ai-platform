@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { useForgeStore } from '../lib/store';
 import { LiveProcessingPanel } from '../components/LiveProcessingPanel';
+import { UnderTheHoodSection } from '../components/EngineeringStatus';
 import { Badge, Button, ForgeMark, Panel } from '../components/ui';
 import { cn } from '../lib/utils';
 
@@ -305,16 +306,16 @@ export function ShowcasePage() {
           <div className="flex items-center gap-2.5">
             <ForgeMark className="w-6 h-6" />
             <span className="font-semibold text-[15px] tracking-[-0.03em]">Forge</span>
-            <Badge className="bg-stone-100 text-stone-700 border-stone-200 hidden sm:inline-flex">
-              Engineering Showcase
-            </Badge>
+            <span className="hidden sm:inline font-mono text-[11px] text-stone-500">
+              / Product Overview
+            </span>
           </div>
           <nav aria-label="Showcase navigation" className="hidden md:flex items-center gap-5 text-xs text-stone-600">
             <a href="#architecture" className="hover:text-[#111111]">Architecture</a>
+            <a href="#under-the-hood" className="hover:text-[#111111]">Under the Hood</a>
             <a href="#demo" className="hover:text-[#111111]">PR Demo</a>
             <a href="#tradeoffs" className="hover:text-[#111111]">Trade-Offs</a>
             <a href="#evidence" className="hover:text-[#111111]">Verification</a>
-            <a href="#walkthrough" className="hover:text-[#111111]">Interview Q&amp;A</a>
             <a href="#limitations" className="hover:text-[#111111]">Limitations</a>
           </nav>
           <div className="flex items-center gap-2">
@@ -342,8 +343,7 @@ export function ShowcasePage() {
         {/* 1. 10-Second Hero Introduction */}
         <section className="rounded-2xl bg-white border border-[#E5E5E0] p-7 sm:p-10 shadow-[0_1px_3px_rgba(0,0,0,0.03)] space-y-6">
           <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono uppercase tracking-[0.12em] text-stone-500">
-            <span className="w-2 h-2 rounded-full bg-emerald-600" />
-            Public Technical Showcase · Zero Private Tenant Data Exposed
+            <span>FORGE · Predictive Engineering &amp; Change Impact Platform</span>
           </div>
 
           <div className="max-w-4xl space-y-4">
@@ -578,6 +578,9 @@ export function ShowcasePage() {
             </div>
           </Panel>
         </section>
+
+        {/* 3b. Under the Hood — Live CI, Testing, Security, Deployment & Reliability Evidence */}
+        <UnderTheHoodSection />
 
         {/* 4. End-to-End PR Analysis Demonstration + Processing Timeline */}
         <section id="demo" className="space-y-4">
@@ -1018,9 +1021,12 @@ export function ShowcasePage() {
         <footer className="pt-4 pb-8 border-t border-[#E5E5E0] flex flex-wrap items-center justify-between gap-4 text-xs text-stone-500">
           <div className="flex items-center gap-2">
             <Lock className="w-3.5 h-3.5 text-stone-500" />
-            <span>FORGE Engineering Showcase · Zero private tenant data exposed on this route</span>
+            <span>FORGE · Zero private tenant data exposed on this route</span>
           </div>
-          <div className="flex items-center gap-4 font-mono">
+          <div className="flex flex-wrap items-center gap-4 font-mono">
+            <Link to="/engineering" className="text-stone-600 hover:text-[#111111] hover:underline">
+              Engineering &amp; Reliability
+            </Link>
             <Link to="/login" className="text-[#111111] hover:underline">Sign In / Register</Link>
             <a
               href="https://github.com/nischay237/forge-ai-platform"

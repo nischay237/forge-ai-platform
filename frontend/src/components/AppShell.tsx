@@ -99,13 +99,6 @@ export function AppShell() {
               </kbd>
             </button>
 
-            <Link
-              to="/showcase"
-              className="hidden lg:inline-flex items-center h-8 px-2.5 rounded-md border border-[#E2E2DC] bg-[#FAFAF8] hover:bg-stone-100 text-xs font-medium text-stone-700 hover:text-[#111111] transition-colors"
-            >
-              Showcase
-            </Link>
-
             <Button size="sm" onClick={() => navigate('/reviews?new=1')}>
               <Plus className="w-3.5 h-3.5" />
               <span className="hidden xs:inline">Analyze PR</span>
@@ -211,6 +204,20 @@ export function AppShell() {
       <main className="flex-1 max-w-[1360px] w-full mx-auto px-4 sm:px-6 py-7">
         <Outlet />
       </main>
+
+      <footer className="border-t border-[#E5E5E0] bg-white/80">
+        <div className="max-w-[1360px] mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3 text-[11px] text-stone-500">
+          <span className="font-mono">FORGE · Change Impact &amp; Predictive Risk Control Plane</span>
+          <div className="flex items-center gap-5">
+            <Link to="/showcase" className="hover:text-[#111111] transition-colors">
+              Product Overview
+            </Link>
+            <Link to="/engineering" className="hover:text-[#111111] transition-colors">
+              Engineering &amp; Reliability
+            </Link>
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }

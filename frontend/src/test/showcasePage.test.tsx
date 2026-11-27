@@ -17,10 +17,12 @@ describe('Public Recruiter Showcase Page (/showcase)', () => {
     );
 
     expect(screen.getByText(/Understand the impact of every code change/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Under the Hood' })).toBeInTheDocument();
     expect(screen.getByText(/SIMULATED SAMPLE WALKTHROUGH/i)).toBeInTheDocument();
     expect(screen.getAllByText('Not verified').length).toBeGreaterThanOrEqual(3);
     expect(screen.getAllByText(/not trained ML/i).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/Zero private tenant data exposed/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole('link', { name: 'Engineering & Reliability' })).toHaveAttribute('href', '/engineering');
   });
 
   it('switches interactive architecture nodes and expands interview walkthrough Q&A', () => {

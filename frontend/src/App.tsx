@@ -11,6 +11,11 @@ import { LoginPage } from './pages/LoginPage';
 const ShowcasePage = lazy(() =>
   import('./pages/ShowcasePage').then((m) => ({ default: m.ShowcasePage }))
 );
+const EngineeringReliabilityPage = lazy(() =>
+  import('./pages/EngineeringReliabilityPage').then((m) => ({
+    default: m.EngineeringReliabilityPage,
+  }))
+);
 const OverviewPage = lazy(() => import('./pages/OverviewPage').then((m) => ({ default: m.OverviewPage })));
 const RepositoriesPage = lazy(() =>
   import('./pages/RepositoriesPage').then((m) => ({ default: m.RepositoriesPage }))
@@ -82,6 +87,7 @@ export function App() {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/showcase" element={<ShowcasePage />} />
+            <Route path="/engineering" element={<EngineeringReliabilityPage />} />
             <Route
               path="/"
               element={
