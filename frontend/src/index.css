@@ -68,3 +68,99 @@
 .react-flow__attribution {
   display: none !important;
 }
+
+@keyframes forge-scan-beam {
+  0% {
+    top: 0%;
+    opacity: 0.95;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    top: 96%;
+    opacity: 0.95;
+  }
+}
+
+@keyframes forge-pop-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes forge-card-pop {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 26px, 0) scale(0.95);
+    filter: blur(4px);
+  }
+  62% {
+    opacity: 1;
+    transform: translate3d(0, -3px, 0) scale(1.012);
+    filter: blur(0px);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0px);
+  }
+}
+
+@keyframes forge-step-pop {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes forge-ring-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(9, 9, 11, 0.22), 0 12px 30px rgba(9, 9, 11, 0.08);
+  }
+  100% {
+    box-shadow: 0 0 0 10px rgba(9, 9, 11, 0), 0 10px 28px rgba(15, 23, 42, 0.05);
+  }
+}
+
+@keyframes forge-ring-pulse-crit {
+  0% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.28), 0 12px 30px rgba(220, 38, 38, 0.1);
+  }
+  100% {
+    box-shadow: 0 0 0 12px rgba(220, 38, 38, 0), 0 10px 28px rgba(15, 23, 42, 0.05);
+  }
+}
+
+.animate-forge-beam {
+  animation: forge-scan-beam 1.9s cubic-bezier(0.4, 0, 0.2, 1) infinite alternate;
+}
+
+.animate-forge-pop {
+  animation: forge-pop-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-forge-card-pop {
+  animation:
+    forge-card-pop 0.48s cubic-bezier(0.16, 1, 0.3, 1) forwards,
+    forge-ring-pulse 0.85s ease-out forwards;
+}
+
+.animate-forge-card-pop-crit {
+  animation:
+    forge-card-pop 0.48s cubic-bezier(0.16, 1, 0.3, 1) forwards,
+    forge-ring-pulse-crit 0.95s ease-out forwards;
+}
+
+.animate-forge-step-pop {
+  animation: forge-step-pop 0.36s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
