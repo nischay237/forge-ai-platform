@@ -118,10 +118,10 @@ export function classifyActuatorHealth(
   ok: boolean,
   statusText: string | null | undefined
 ): EvidenceStatus {
-  if (!ok || !statusText) return 'unverified';
+  if (!statusText) return 'unverified';
   const upper = statusText.trim().toUpperCase();
-  if (upper === 'UP') return 'verified';
   if (upper === 'DOWN' || upper === 'OUT_OF_SERVICE') return 'failed';
+  if (ok && upper === 'UP') return 'verified';
   return 'unverified';
 }
 
@@ -135,14 +135,14 @@ export function deriveOverallSummary(
   if (healthStatus === 'verified' && ciStatus === 'verified') {
     return { status: 'verified', label: 'System operational · CI verified' };
   }
-  if (ciStatus === 'stale') {
+  if (healthStatus === 'stale' || ciStatus === 'stale') {
     return { status: 'stale', label: 'CI checks stale' };
   }
   if (healthStatus === 'verified' && ciStatus === 'unverified') {
-    return { status: 'verified', label: 'API healthy · CI not verified' };
+    return { status: 'unverified', label: 'API healthy · CI not verified' };
   }
   if (healthStatus === 'unverified' && ciStatus === 'verified') {
-    return { status: 'verified', label: 'CI verified · Runtime not verified' };
+    return { status: 'unverified', label: 'CI verified · Runtime not verified' };
   }
   return { status: 'unverified', label: 'System status: Not verified' };
 }
@@ -154,17 +154,63 @@ export function formatEvidenceTimestamp(iso: string | null | undefined): string 
   return d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
 }
 
-function findJob(jobs: CiJobEvidence[], pattern: RegExp): CiJobEvidence | undefined {
-  return jobs.find((j) => pattern.test(j.name));
+export const DOCKER_JOB_PATTERN = /\bdocker\b|\bcontainer\s+images?\b/i;
+export const SECURITY_JOB_PATTERN = /\b(security|hygiene|compose|codeql|sast)\b/i;
+export const BACKEND_JOB_PATTERN = /\b(backend|archunit|postgres|testcontainers|junit|spring)\b/i;
+export const FRONTEND_JOB_PATTERN = /\b(frontend|vitest|playwright|typecheck)\b/i;
+
+export function findMatchingJobs(
+  jobs: CiJobEvidence[],
+  pattern: RegExp,
+  excludePattern?: RegExp
+): CiJobEvidence[] {
+  return jobs.filter((j) => pattern.test(j.name) && (!excludePattern || !excludePattern.test(j.name)));
 }
 
-function mergeJobStatuses(matched: Array<CiJobEvidence | undefined>): EvidenceStatus {
-  const present = matched.filter((j): j is CiJobEvidence => Boolean(j));
-  if (present.length === 0) return 'unverified';
-  if (present.some((j) => j.status === 'failed')) return 'failed';
-  if (present.some((j) => j.status === 'stale')) return 'stale';
-  if (present.every((j) => j.status === 'verified')) return 'verified';
+function deduplicateJobs(jobs: CiJobEvidence[]): CiJobEvidence[] {
+  const seen = new Map<number, CiJobEvidence>();
+  for (const job of jobs) {
+    if (!seen.has(job.id)) {
+      seen.set(job.id, job);
+    }
+  }
+  return Array.from(seen.values());
+}
+
+function mergeJobStatuses(matched: CiJobEvidence[]): EvidenceStatus {
+  if (matched.length === 0) return 'unverified';
+  if (matched.some((j) => j.status === 'failed')) return 'failed';
+  if (matched.some((j) => j.status === 'unverified')) return 'unverified';
+  if (matched.some((j) => j.status === 'stale')) return 'stale';
+  if (matched.every((j) => j.status === 'verified')) return 'verified';
   return 'unverified';
+}
+
+function latestCompletedAt(matched: CiJobEvidence[], fallback: string | null): string | null {
+  let latestMs = -Infinity;
+  let latestIso: string | null = null;
+  for (const job of matched) {
+    if (!job.completedAt) continue;
+    const ms = new Date(job.completedAt).getTime();
+    if (!Number.isNaN(ms) && ms > latestMs) {
+      latestMs = ms;
+      latestIso = job.completedAt;
+    }
+  }
+  return latestIso ?? fallback;
+}
+
+function isAbortError(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  if (err instanceof Error && err.name === 'AbortError') return true;
+  if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') return true;
+  return typeof err === 'object' && err !== null && 'name' in err && (err as { name?: unknown }).name === 'AbortError';
+}
+
+function createAbortError(): Error {
+  const err = new Error('The engineering evidence request was aborted.');
+  err.name = 'AbortError';
+  return err;
 }
 
 export function buildEvidenceSnapshot(params: {
@@ -215,14 +261,16 @@ export function buildEvidenceSnapshot(params: {
           : `Latest main workflow is ${params.run.status} (${params.run.conclusion ?? 'pending'}).`
     : params.ciErrorDetail || 'GitHub Actions status could not be verified from this browser session.';
 
-  const securityJob = findJob(mappedJobs, /security|hygiene|compose/i);
-  const backendJob = findJob(mappedJobs, /backend|archunit|postgres/i);
-  const frontendJob = findJob(mappedJobs, /frontend|vitest/i);
-  const dockerJob = findJob(mappedJobs, /docker|container/i);
+  const securityJobs = findMatchingJobs(mappedJobs, SECURITY_JOB_PATTERN);
+  const backendJobs = findMatchingJobs(mappedJobs, BACKEND_JOB_PATTERN, DOCKER_JOB_PATTERN);
+  const frontendJobs = findMatchingJobs(mappedJobs, FRONTEND_JOB_PATTERN, DOCKER_JOB_PATTERN);
+  const dockerJobs = findMatchingJobs(mappedJobs, DOCKER_JOB_PATTERN);
 
-  const testingStatus = mergeJobStatuses([backendJob, frontendJob]);
-  const securityStatus = securityJob ? securityJob.status : 'unverified';
-  const deploymentStatus = dockerJob ? dockerJob.status : 'unverified';
+  const architectureStatus = mergeJobStatuses(backendJobs);
+  const testingJobs = deduplicateJobs([...backendJobs, ...frontendJobs]);
+  const testingStatus = mergeJobStatuses(testingJobs);
+  const securityStatus = mergeJobStatuses(securityJobs);
+  const deploymentStatus = mergeJobStatuses(dockerJobs);
 
   const overall = deriveOverallSummary(healthStatus, ciStatus);
 
@@ -245,12 +293,16 @@ export function buildEvidenceSnapshot(params: {
       architecture: {
         id: 'architecture',
         label: 'Architecture',
-        status: backendJob ? backendJob.status : 'unverified',
+        status: architectureStatus,
         detail:
-          backendJob?.status === 'verified'
-            ? 'Modular monolith package boundaries verified by ArchUnit in the latest backend CI job.'
-            : 'Modular monolith with ArchUnit rules, Transactional Outbox, Kafka DLT, and PostgreSQL 16 schema (live check not verified).',
-        observedAt: backendJob?.completedAt ?? ciObservedAt,
+          architectureStatus === 'verified'
+            ? 'Modular monolith package boundaries verified by ArchUnit in the latest backend CI job(s).'
+            : architectureStatus === 'failed'
+              ? 'One or more backend/ArchUnit verification jobs failed in the latest CI run.'
+              : architectureStatus === 'stale'
+                ? 'Backend ArchUnit verification passed, but the latest check is older than 14 days.'
+                : 'Modular monolith with ArchUnit rules, Transactional Outbox, Kafka DLT, and PostgreSQL 16 schema (live check not verified).',
+        observedAt: latestCompletedAt(backendJobs, ciObservedAt),
         sourceUrl: `${GITHUB_BLOB_BASE}/docs/ARCHITECTURE.md`,
         sourceLabel: 'docs/ARCHITECTURE.md',
       },
@@ -272,8 +324,10 @@ export function buildEvidenceSnapshot(params: {
             ? 'Backend JUnit 5, PostgreSQL 16 Testcontainers, TypeScript typecheck, and Vitest passed in CI. Coverage % is not verified.'
             : testingStatus === 'failed'
               ? 'One or more automated backend or frontend test jobs failed in the latest CI run.'
-              : 'Automated JUnit 5, Testcontainers, and Vitest suites are configured in CI; live status is not verified here.',
-        observedAt: backendJob?.completedAt ?? frontendJob?.completedAt ?? ciObservedAt,
+              : testingStatus === 'stale'
+                ? 'Automated test jobs passed, but one or more checks are older than 14 days.'
+                : 'Automated JUnit 5, Testcontainers, and Vitest suites are configured in CI; live status is not verified here.',
+        observedAt: latestCompletedAt(testingJobs, ciObservedAt),
         sourceUrl: `${GITHUB_BLOB_BASE}/.github/workflows/ci.yml`,
         sourceLabel: 'ci.yml',
       },
@@ -286,8 +340,10 @@ export function buildEvidenceSnapshot(params: {
             ? 'Config hygiene gate passed (no hardcoded secrets or localhost prod fallbacks); AES-256-GCM AAD, rotating tokens, fail-closed SSE tickets, and optional RLS documented.'
             : securityStatus === 'failed'
               ? 'Security hygiene or dependency audit gate failed in the latest CI run.'
-              : 'AES-256-GCM secrets, fail-fast prod validation, and prod npm audit gate are configured; live run status not verified.',
-        observedAt: securityJob?.completedAt ?? ciObservedAt,
+              : securityStatus === 'stale'
+                ? 'Security gate passed, but the latest check is older than 14 days.'
+                : 'AES-256-GCM secrets, fail-fast prod validation, and prod npm audit gate are configured; live run status not verified.',
+        observedAt: latestCompletedAt(securityJobs, ciObservedAt),
         sourceUrl: `${GITHUB_BLOB_BASE}/docs/SECURITY.md`,
         sourceLabel: 'docs/SECURITY.md',
       },
@@ -300,8 +356,10 @@ export function buildEvidenceSnapshot(params: {
             ? 'Frontend, backend, and unified Docker images plus Compose config passed in CI. External production host uptime is not verified.'
             : deploymentStatus === 'failed'
               ? 'One or more container image builds failed in the latest CI run.'
-              : 'Multi-stage Dockerfiles, readiness probes, and Render manifest exist; live build status not verified here.',
-        observedAt: dockerJob?.completedAt ?? ciObservedAt,
+              : deploymentStatus === 'stale'
+                ? 'Container image builds passed, but the latest check is older than 14 days.'
+                : 'Multi-stage Dockerfiles, readiness probes, and Render manifest exist; live build status not verified here.',
+        observedAt: latestCompletedAt(dockerJobs, ciObservedAt),
         sourceUrl: `${GITHUB_BLOB_BASE}/Dockerfile`,
         sourceLabel: 'Dockerfile',
       },
@@ -327,6 +385,10 @@ export async function fetchEngineeringEvidence(options?: {
   forceRefresh?: boolean;
   signal?: AbortSignal;
 }): Promise<EngineeringEvidenceSnapshot> {
+  if (options?.signal?.aborted) {
+    throw createAbortError();
+  }
+
   const nowMs = Date.now();
   if (!options?.forceRefresh && cachedSnapshot && cachedSnapshot.expiresAt > nowMs) {
     return cachedSnapshot.data;
@@ -340,26 +402,50 @@ export async function fetchEngineeringEvidence(options?: {
         headers: { Accept: 'application/json' },
         signal: options?.signal,
       });
+
+      // Parse JSON body BEFORE checking res.ok because Spring Boot Actuator returns HTTP 503 with {"status":"DOWN"} / {"status":"OUT_OF_SERVICE"}
+      let statusText: string | null = null;
+      try {
+        const data = (await res.json()) as { status?: string };
+        statusText = typeof data?.status === 'string' ? data.status.trim() : null;
+      } catch (parseErr) {
+        if (isAbortError(parseErr, options?.signal)) {
+          throw parseErr;
+        }
+        statusText = null;
+      }
+
+      const upperStatus = statusText ? statusText.toUpperCase() : null;
+      if (upperStatus === 'DOWN' || upperStatus === 'OUT_OF_SERVICE') {
+        return {
+          ok: res.ok,
+          statusText: upperStatus,
+          detail: `Live /actuator/health endpoint responded ${upperStatus} (HTTP ${res.status}).`,
+        };
+      }
+
       if (!res.ok) {
         return {
           ok: false,
-          statusText: null,
+          statusText,
           detail: `Backend health probe returned HTTP ${res.status}; runtime status not verified.`,
         };
       }
-      const data = (await res.json()) as { status?: string };
-      const statusText = typeof data?.status === 'string' ? data.status : null;
+
       return {
         ok: true,
         statusText,
         detail:
-          statusText?.toUpperCase() === 'UP'
+          upperStatus === 'UP'
             ? 'Live /actuator/health endpoint responded UP.'
             : statusText
               ? `Live /actuator/health endpoint responded ${statusText}.`
               : 'Live /actuator/health responded without a standard status field.',
       };
-    } catch {
+    } catch (err) {
+      if (isAbortError(err, options?.signal)) {
+        throw err;
+      }
       return {
         ok: false,
         statusText: null,
@@ -407,12 +493,18 @@ export async function fetchEngineeringEvidence(options?: {
           const jobsPayload = (await jobsRes.json()) as { jobs?: GithubJobApi[] };
           jobs = jobsPayload.jobs ?? [];
         }
-      } catch {
+      } catch (jobErr) {
+        if (isAbortError(jobErr, options?.signal)) {
+          throw jobErr;
+        }
         // Keep run-level evidence even if job breakdown fetch fails
       }
 
       return { run: latestRun, jobs, errorDetail: null };
-    } catch {
+    } catch (err) {
+      if (isAbortError(err, options?.signal)) {
+        throw err;
+      }
       return {
         run: null,
         jobs: [],
@@ -422,6 +514,10 @@ export async function fetchEngineeringEvidence(options?: {
   })();
 
   const [healthRes, ciRes] = await Promise.all([healthPromise, ciPromise]);
+
+  if (options?.signal?.aborted) {
+    throw createAbortError();
+  }
 
   const snapshot = buildEvidenceSnapshot({
     nowIso,
@@ -448,9 +544,14 @@ export function useEngineeringEvidence(controlled?: EngineeringEvidenceSnapshot 
     async (forceRefresh = true) => {
       if (controlled !== undefined) return;
       setLoading(true);
-      const snap = await fetchEngineeringEvidence({ forceRefresh });
-      setData(snap);
-      setLoading(false);
+      try {
+        const snap = await fetchEngineeringEvidence({ forceRefresh });
+        setData(snap);
+      } catch {
+        // Ignore aborted refresh errors
+      } finally {
+        setLoading(false);
+      }
     },
     [controlled]
   );
@@ -465,15 +566,16 @@ export function useEngineeringEvidence(controlled?: EngineeringEvidenceSnapshot 
     let mounted = true;
     fetchEngineeringEvidence({ signal: controller.signal })
       .then((snap) => {
-        if (mounted) {
+        if (mounted && !controller.signal.aborted) {
           setData(snap);
           setLoading(false);
         }
       })
-      .catch(() => {
-        if (mounted) {
-          setLoading(false);
+      .catch((err) => {
+        if (!mounted || isAbortError(err, controller.signal)) {
+          return;
         }
+        setLoading(false);
       });
     return () => {
       mounted = false;

@@ -2,12 +2,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import {
+  BACKEND_JOB_PATTERN,
   buildEvidenceSnapshot,
   classifyActuatorHealth,
   classifyWorkflowOutcome,
   clearEngineeringEvidenceCache,
   deriveOverallSummary,
+  DOCKER_JOB_PATTERN,
   fetchEngineeringEvidence,
+  findMatchingJobs,
   STALE_THRESHOLD_MS,
 } from '../lib/engineeringEvidence';
 import { SystemStatusIndicator, UnderTheHoodSection } from '../components/EngineeringStatus';
@@ -182,5 +185,183 @@ describe('Engineering Evidence Classification & Restrained Status UI', () => {
 
     const footerLink = screen.getByRole('link', { name: 'Engineering & Reliability' });
     expect(footerLink).toHaveAttribute('href', '/engineering');
+  });
+
+  // --- Targeted Regression Tests for the 4 engineeringEvidence.ts Bugs ---
+
+  it('regression #1: parses non-2xx /actuator/health JSON body (HTTP 503 DOWN / OUT_OF_SERVICE) as failed', async () => {
+    expect(classifyActuatorHealth(false, 'DOWN')).toBe('failed');
+    expect(classifyActuatorHealth(false, 'OUT_OF_SERVICE')).toBe('failed');
+    expect(classifyActuatorHealth(false, 'UP')).toBe('unverified');
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/actuator/health')) {
+        return new Response(JSON.stringify({ status: 'DOWN' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ workflow_runs: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const snap = await fetchEngineeringEvidence({ forceRefresh: true });
+    expect(fetchSpy).toHaveBeenCalled();
+    expect(snap.runtimeHealth.status).toBe('failed');
+    expect(snap.runtimeHealth.detail).toContain('DOWN');
+    expect(snap.runtimeHealth.detail).toContain('503');
+    expect(snap.categories.reliability.status).toBe('failed');
+    expect(snap.overallStatus).toBe('failed');
+
+    // Also verify HTTP 503 OUT_OF_SERVICE -> failed, and HTTP 502 non-JSON -> unverified
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/actuator/health')) {
+        return new Response(JSON.stringify({ status: 'OUT_OF_SERVICE' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ workflow_runs: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const outOfServiceSnap = await fetchEngineeringEvidence({ forceRefresh: true });
+    expect(outOfServiceSnap.runtimeHealth.status).toBe('failed');
+    expect(outOfServiceSnap.runtimeHealth.detail).toContain('OUT_OF_SERVICE');
+    expect(outOfServiceSnap.overallStatus).toBe('failed');
+
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/actuator/health')) {
+        return new Response('<html>Bad Gateway</html>', {
+          status: 502,
+          headers: { 'Content-Type': 'text/html' },
+        });
+      }
+      return new Response(JSON.stringify({ workflow_runs: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const badGatewaySnap = await fetchEngineeringEvidence({ forceRefresh: true });
+    expect(badGatewaySnap.runtimeHealth.status).toBe('unverified');
+    expect(badGatewaySnap.runtimeHealth.detail).toContain('HTTP 502');
+  });
+
+  it('regression #2: deriveOverallSummary never returns verified when only one evidence source is verified', () => {
+    expect(deriveOverallSummary('verified', 'unverified')).toEqual({
+      status: 'unverified',
+      label: 'API healthy · CI not verified',
+    });
+    expect(deriveOverallSummary('unverified', 'verified')).toEqual({
+      status: 'unverified',
+      label: 'CI verified · Runtime not verified',
+    });
+    expect(deriveOverallSummary('verified', 'verified')).toEqual({
+      status: 'verified',
+      label: 'System operational · CI verified',
+    });
+  });
+
+  it('regression #3: rethrows AbortError on cancelled fetch and never caches an aborted snapshot', async () => {
+    const controller = new AbortController();
+    const abortErr = new Error('Aborted');
+    abortErr.name = 'AbortError';
+
+    let callCount = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      callCount++;
+      if (callCount <= 2) {
+        controller.abort();
+        throw abortErr;
+      }
+      const url = String(input);
+      if (url.includes('/actuator/health')) {
+        return new Response(JSON.stringify({ status: 'UP' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/actions/runs?')) {
+        return new Response(
+          JSON.stringify({
+            workflow_runs: [
+              {
+                id: 777,
+                status: 'completed',
+                conclusion: 'success',
+                head_sha: 'ad16c21e280c30ef4c6c5462e9bbcf06981b7815',
+                head_branch: 'main',
+                updated_at: new Date().toISOString(),
+                html_url: 'https://github.com/nischay237/forge-ai-platform/actions/runs/777',
+              },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({ jobs: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    await expect(fetchEngineeringEvidence({ signal: controller.signal })).rejects.toThrow(/Abort/i);
+
+    // Subsequent non-forced call MUST NOT receive a cached snapshot from the aborted attempt
+    const freshSnap = await fetchEngineeringEvidence();
+    expect(freshSnap.runtimeHealth.status).toBe('verified');
+    expect(freshSnap.ciRun.status).toBe('verified');
+    expect(freshSnap.overallStatus).toBe('verified');
+  });
+
+  it('regression #4: aggregates ALL matching CI jobs per category instead of stopping at the first match', () => {
+    const nowMs = Date.parse('2026-11-27T14:30:00Z');
+    const freshIso = new Date(nowMs - 60_000).toISOString();
+    const staleIso = new Date(nowMs - STALE_THRESHOLD_MS - 86_400_000).toISOString();
+
+    const snap = buildEvidenceSnapshot({
+      nowIso: new Date(nowMs).toISOString(),
+      nowMs,
+      healthOk: true,
+      healthStatusText: 'UP',
+      healthDetail: 'Live /actuator/health endpoint responded UP.',
+      run: {
+        id: 888,
+        status: 'completed',
+        conclusion: 'failure',
+        head_sha: 'ad16c21e280c30ef4c6c5462e9bbcf06981b7815',
+        head_branch: 'main',
+        updated_at: freshIso,
+        html_url: 'https://github.com/nischay237/forge-ai-platform/actions/runs/888',
+      },
+      jobs: [
+        // Two Docker jobs: first passes, second fails -> deployment MUST be failed
+        { id: 10, name: 'Docker Frontend Build', status: 'completed', conclusion: 'success', completed_at: freshIso },
+        { id: 11, name: 'Docker Backend Build', status: 'completed', conclusion: 'failure', completed_at: freshIso },
+        // Two Security jobs: first passes fresh, second is stale -> security MUST be stale
+        { id: 20, name: 'Security Hygiene Gate', status: 'completed', conclusion: 'success', completed_at: freshIso },
+        { id: 21, name: 'Security Compose Gate', status: 'completed', conclusion: 'success', completed_at: staleIso },
+        // Two Backend jobs: first passes, second still in progress -> architecture & testing MUST be unverified
+        { id: 30, name: 'Backend Unit & ArchUnit', status: 'completed', conclusion: 'success', completed_at: freshIso },
+        { id: 31, name: 'Backend Postgres Testcontainers', status: 'in_progress', conclusion: null, completed_at: null },
+        { id: 40, name: 'Frontend Vitest & Build', status: 'completed', conclusion: 'success', completed_at: freshIso },
+      ],
+      ciErrorDetail: null,
+    });
+
+    expect(findMatchingJobs(snap.ciRun.jobs, DOCKER_JOB_PATTERN)).toHaveLength(2);
+    expect(findMatchingJobs(snap.ciRun.jobs, BACKEND_JOB_PATTERN, DOCKER_JOB_PATTERN)).toHaveLength(2);
+    expect(snap.categories.deployment.status).toBe('failed');
+    expect(snap.categories.security.status).toBe('stale');
+    expect(snap.categories.architecture.status).toBe('unverified');
+    expect(snap.categories.testing.status).toBe('unverified');
   });
 });
