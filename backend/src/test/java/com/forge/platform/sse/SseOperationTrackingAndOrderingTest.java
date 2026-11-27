@@ -199,5 +199,19 @@ class SseOperationTrackingAndOrderingTest {
             .andExpect(jsonPath("$.events[1].stage").value("LOADING_CONFIRMED_OUTCOMES"))
             .andExpect(jsonPath("$.events[2].stage").value("EVALUATING_HELD_OUT_SPLITS"))
             .andExpect(jsonPath("$.events[3].stage").value("EVALUATION_COMPLETED"));
+
+        // Persisted INDEX_FAILED repository recovers honestly as FAILED (not RUNNING)
+        RepositoryEntity failedRepo = RepositoryEntity.create(
+            tenantA.tenantId(), "acme", "broken-ast-" + UUID.randomUUID().toString().substring(0, 4),
+            "main", "Java", "https://github.com/acme/broken-ast", "Failed index test"
+        );
+        failedRepo.setIndexStatus("INDEX_FAILED");
+        repositoryJpaRepository.save(failedRepo);
+
+        mockMvc.perform(get("/api/v1/stream/operations/" + PipelineEvent.buildOperationId("REPO_INDEX", failedRepo.getId()))
+                .header("Authorization", "Bearer " + tenantA.token()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.status").value("FAILED"))
+            .andExpect(jsonPath("$.currentStage").value("FAILED"));
     }
 }

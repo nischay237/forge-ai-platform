@@ -261,6 +261,80 @@ class PredictiveEnginesUnitTest {
         assertThat(rollbackEvidence.observedAt()).isEqualTo(rollbackAt);
     }
 
+    @Test
+    void avoidsFalsePositivesOnDocsAndAvoidsSubstringDefectCollisionAndFlagsUnsupportedAstLanguages() {
+        // 1. Markdown docs containing SQL snippets MUST NOT trigger missing-tests or static perf warnings
+        String docsDiff = """
+            diff --git a/docs/QUERY_EXAMPLES.md b/docs/QUERY_EXAMPLES.md
+            --- a/docs/QUERY_EXAMPLES.md
+            +++ b/docs/QUERY_EXAMPLES.md
+            @@ -1,2 +1,5 @@
+             # Examples
+            +```sql
+            +SELECT * FROM audit_logs WHERE tenant_id = 'demo';
+            +```
+            """;
+
+        PrFeatureExtractor.PrFeatureVector docsFv = buildVector(
+            docsDiff, false, false, false, false, 0, 0, 0,
+            List.of(), List.of(), Map.of(), List.of(), List.of()
+        );
+        var docsBug = bugRiskPredictor.predict(docsFv);
+        var docsPerf = performanceAnalyzer.analyze(docsFv);
+
+        assertThat(docsBug.evidence())
+            .extracting(PredictionCandidate.EvidenceDraft::evidenceType)
+            .doesNotContain("NO_TEST_UPDATES_IN_PR");
+        assertThat(docsPerf.evidence()).isEmpty();
+
+        // 2. Defect on UserService.java MUST NOT match User.java by broad substring; and .py file notes unsupported AST language
+        String userAndPyDiff = """
+            diff --git a/src/main/java/com/acme/users/User.java b/src/main/java/com/acme/users/User.java
+            --- a/src/main/java/com/acme/users/User.java
+            +++ b/src/main/java/com/acme/users/User.java
+            @@ -1,2 +1,4 @@
+             public class User {
+            +    private String displayName;
+             }
+            diff --git a/scripts/reconcile.py b/scripts/reconcile.py
+            --- a/scripts/reconcile.py
+            +++ b/scripts/reconcile.py
+            @@ -1,1 +1,3 @@
+            +def run():
+            +    return True
+            """;
+
+        DefectRecordEntity unrelatedServiceDefect = DefectRecordEntity.create(
+            "t1", "r1", "Bug in UserService caching", "HIGH", "users",
+            "[\"src/main/java/com/acme/users/UserService.java\"]", 5, null, "OPEN", "def-us", Instant.parse("2026-03-01T00:00:00Z")
+        );
+        IncidentRecordEntity olderInc = IncidentRecordEntity.create(
+            "t1", "r1", "Older users incident", "SEV2", "users-api", "[\"users\"]", null, 3, "RESOLVED", "Old",
+            "inc-old", Instant.parse("2026-02-01T00:00:00Z"), Instant.parse("2026-02-01T01:00:00Z")
+        );
+        IncidentRecordEntity newerInc = IncidentRecordEntity.create(
+            "t1", "r1", "Newer users incident", "SEV1", "users-api", "[\"users\"]", null, 7, "RESOLVED", "New",
+            "inc-new", Instant.parse("2026-03-20T00:00:00Z"), Instant.parse("2026-03-20T01:00:00Z")
+        );
+
+        PrFeatureExtractor.PrFeatureVector fv = buildVector(
+            userAndPyDiff, false, false, false, false, 0, 0, 0,
+            List.of(unrelatedServiceDefect), List.of(olderInc, newerInc), Map.of(), List.of(), List.of()
+        );
+        var bug = bugRiskPredictor.predict(fv);
+
+        var userFileTarget = bug.targetBreakdowns().stream()
+            .filter(t -> "FILE".equals(t.scope()) && t.name().endsWith("User.java"))
+            .findFirst().orElseThrow();
+        assertThat(userFileTarget.reason()).doesNotContain("prior defect");
+
+        var incEvidence = bug.evidence().stream()
+            .filter(e -> "OVERLAPPING_INCIDENT_MODULE".equals(e.evidenceType()))
+            .findFirst().orElseThrow();
+        assertThat(incEvidence.observedAt()).isEqualTo(Instant.parse("2026-03-20T00:00:00Z"));
+        assertThat(bug.limitations()).contains("outside Java/TS/JS AST indexing");
+    }
+
     private PrFeatureExtractor.PrFeatureVector buildVector(
         String rawDiff,
         boolean criticalPath,

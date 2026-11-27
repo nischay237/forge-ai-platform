@@ -329,7 +329,7 @@ public class RepositoryService implements OperationStatusFallbackProvider {
                 completedStages = 4;
                 eventStatus = "COMPLETED";
                 completedAt = repo.getLastIndexedAt() != null ? repo.getLastIndexedAt() : repo.getCreatedAt();
-            } else if ("FAILED".equals(rawStatus)) {
+            } else if ("FAILED".equals(rawStatus) || "INDEX_FAILED".equals(rawStatus)) {
                 snapshotStatus = "FAILED";
                 stage = "FAILED";
                 label = "Repository indexing failed";

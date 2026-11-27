@@ -60,7 +60,11 @@ public class PerformanceRegressionAnalyzer {
         for (UnifiedDiffParser.ParsedDiffFile file : fv.parsedFiles()) {
             String path = file.filePath();
             String lowerPath = path.toLowerCase(Locale.ROOT);
-            if (lowerPath.contains("/test/") || lowerPath.endsWith("test.java") || lowerPath.endsWith(".test.ts")) {
+            // Skip test files and non-code documentation/config/asset files to prevent false positives
+            if (!BugRiskPredictor.isCodeFile(path)
+                || lowerPath.contains("/test/") || lowerPath.contains("/__tests__/")
+                || lowerPath.endsWith("test.java") || lowerPath.endsWith(".test.ts")
+                || lowerPath.endsWith(".test.tsx") || lowerPath.endsWith(".spec.ts")) {
                 continue;
             }
 

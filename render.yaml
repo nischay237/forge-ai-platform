@@ -4,7 +4,7 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: starter
-    healthCheckPath: /actuator/health
+    healthCheckPath: /actuator/health/readiness
     envVars:
       - key: PORT
         value: "10000"
